@@ -593,11 +593,4 @@ contract Mandate is AccessControl, Pausable {
         }
         return approvalSettings[_mandateId];
     }
-
-    /**
-     * @dev Returns the version of the contract
-     */
-    function version() external pure returns (string memory) {
-        return "1.0.0";
-    }
 }
