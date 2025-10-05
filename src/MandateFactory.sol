@@ -26,7 +26,7 @@ contract MandateFactory is Ownable {
      */
     function deployMandateContract(address[] memory supportedTokens) external returns (address) {
         address clone = Clones.clone(mandateImplementation);
-        
+
         // Initialize the clone
         Mandate(clone).initialize(msg.sender, supportedTokens);
 

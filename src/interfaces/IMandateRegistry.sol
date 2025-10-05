@@ -21,6 +21,13 @@ interface IMandateRegistry {
         uint256 createdAt;
     }
 
+    struct ApprovalSettings {
+        uint256 lowAllowanceThreshold;
+        uint256 criticalThreshold;
+        bool autoPauseEnabled;
+        bool isPausedBySystem;
+    }
+
     event MandateCreated(
         uint256 indexed mandateId,
         address indexed payer,

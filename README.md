@@ -1,46 +1,75 @@
 # Debyth Mandate Protocol
 
-A comprehensive smart contract system for recurring stablecoin payments on Base network, inspired by traditional direct debit systems but with full user control and transparency.
+A comprehensive smart contract system for recurring stablecoin payments on Base network with intelligent approval management. Combines the convenience of traditional direct debits with complete user control and proactive monitoring.
 
 ## 🎯 Overview
 
-The Debyth Mandate Protocol allows users to set up automatic, recurring stablecoin payments with complete control and transparency. Users create "mandates" that define payment rules, and authorized executors can trigger payments according to those rules.
+The Debyth Mandate Protocol enables automated recurring stablecoin payments while solving the approval management problem. Users maintain full control over their funds while the system provides intelligent monitoring, predictive alerts, and automated safety mechanisms.
 
 ### Key Features
 
-- **User Control**: Users set all payment rules and can cancel anytime
+- **Intelligent Approval Management**: Automated monitoring with predictive alerts
+- **User Sovereignty**: Complete control over funds with instant exit options
 - **Recurring Payments**: Automated payments based on user-defined schedules
+- **Proactive Monitoring**: Health checks prevent payment failures
+- **Clone Architecture**: Gas-efficient deployment using minimal clones
 - **Multiple Tokens**: Support for USDC and USDT on Base
-- **Upgradeable**: UUPS proxy pattern for future improvements
-- **Factory Pattern**: Deploy individual or shared mandate contracts
-- **Security**: Role-based access control and emergency pause functionality
+- **Auto-Pause Protection**: System pauses mandates when allowance is critically low
+- **Configurable Thresholds**: Users set their own warning and critical levels
 
 ## 📋 Contract Architecture
 
 ### Core Contracts
 
-1. **Mandate.sol** - Main mandate contract with all payment logic
-2. **MandateFactory.sol** - Factory for deploying mandate contracts
+1. **Mandate.sol** - Main mandate contract with payment logic and approval health monitoring
+2. **MandateFactory.sol** - Factory for deploying mandate clones
 3. **Libraries/MandateValidation.sol** - Validation logic library
 4. **Interfaces/** - Contract interfaces for integration
 
-### Key Components
+### Architecture Overview
 
 ```
-Mandate
-├── Mandate Management
-│   ├── Create mandates with payment rules
-│   ├── Cancel mandates
-│   └── Query mandate status
-├── Payment Execution
-│   ├── Executor-triggered payments
-│   ├── Validation checks
-│   └── Balance/allowance verification
-└── Admin Functions
-    ├── Executor management
-    ├── Token support
-    └── Emergency controls
+Mandate System
+├── Core Mandate Logic
+│   ├── Create/cancel mandates
+│   ├── Execute payments with validation
+│   └── Role-based access control
+├── Intelligent Approval Management
+│   ├── Health monitoring after each payment
+│   ├── Configurable warning thresholds
+│   ├── Auto-pause on critical allowance
+│   └── Smart top-up recommendations
+├── Clone Deployment
+│   ├── Gas-efficient user instances
+│   ├── Factory-based deployment
+│   └── Isolated contract state
+└── Event-Driven Integration
+    ├── Real-time health alerts
+    ├── Payment notifications
+    └── System status updates
 ```
+
+### 🧠 Intelligent Approval Management
+
+The protocol's key innovation solves the approval management problem:
+
+**The Problem:**
+- Infinite approvals are security risks users avoid
+- Exact approvals require frequent re-approvals
+- Manual management leads to failed payments
+
+**Our Solution:**
+- **Predictive Monitoring**: Tracks remaining payments vs current allowance
+- **Configurable Alerts**: Users set warning (default: 3 payments) and critical (default: 1 payment) thresholds  
+- **Auto-Pause Protection**: Automatically pauses mandates when allowance is critically low
+- **Smart Recommendations**: Calculates optimal top-up amounts with 10% buffer
+- **User Control**: Adjust thresholds, disable auto-pause, unpause anytime
+
+**Benefits:**
+- ✅ No infinite approvals needed
+- ✅ Proactive failure prevention  
+- ✅ Optimal user experience
+- ✅ Complete user sovereignty
 
 ## 🚀 Quick Start
 
@@ -78,7 +107,63 @@ uint256 mandateId = mandate.createMandate(
 );
 ```
 
-3. **Approve tokens:**
+3. **Get smart approval recommendation:**
+```solidity
+uint256 recommended = mandate.calculateRecommendedTopUp(mandateId, 6); // 6 payments ahead
+```
+
+4. **Approve tokens with recommended amount:**
+```solidity
+IERC20(usdcAddress).approve(mandateContract, recommended);
+```
+
+5. **Monitor approval health:**
+```solidity
+(uint256 allowance, uint256 remaining, uint256 topUp, bool healthy) = 
+    mandate.getApprovalHealth(mandateId);
+```
+
+6. **Execute payments (by authorized executor):**
+```solidity
+mandate.executePayment(mandateId, 100e6); // Automatically checks health
+```
+
+### Approval Health Events
+
+Listen for these events to build responsive UIs:
+
+```solidity
+// Warning: allowance getting low
+event ApprovalLowWarning(uint256 indexed mandateId, uint256 remainingAllowance, 
+                        uint256 paymentsRemaining, uint256 recommendedTopUp);
+
+// Critical: mandate will auto-pause soon  
+event ApprovalCritical(uint256 indexed mandateId, uint256 remainingAllowance, 
+                      uint256 recommendedTopUp);
+
+// System paused mandate for protection
+event MandateAutoPaused(uint256 indexed mandateId, string reason);
+
+// Smart recommendation for top-up
+event ApprovalTopUpRequested(uint256 indexed mandateId, uint256 recommendedAmount, 
+                            uint256 forPayments);
+```
+
+### User Control Functions
+
+```solidity
+// Customize warning thresholds
+mandate.setApprovalThresholds(mandateId, 5, 2); // warn at 5, pause at 2
+
+// Enable/disable auto-pause
+mandate.setAutoPause(mandateId, true);
+
+// Unpause after topping up allowance
+mandate.unpauseMandate(mandateId);
+
+// Emergency stop
+mandate.cancelMandate(mandateId);
+```
 ```solidity
 IERC20(usdcAddress).approve(mandateContract, 1000e6);
 ```
@@ -138,7 +223,11 @@ forge test --gas-report
 ### Test Coverage
 
 - ✅ Mandate creation and validation
-- ✅ Payment execution and constraints
+- ✅ Payment execution and constraints  
+- ✅ Approval health monitoring and alerts
+- ✅ Auto-pause and unpause functionality
+- ✅ Smart top-up recommendations
+- ✅ User threshold configuration
 - ✅ User cancellation and revocation
 - ✅ Admin functions and access control
 - ✅ Factory deployment patterns
@@ -169,23 +258,34 @@ RPC_URL=https://mainnet.base.org
 
 ### Safety Mechanisms
 - Pausable contract for emergencies
+- Auto-pause on critical allowance levels
 - Comprehensive input validation
 - Reentrancy protection via OpenZeppelin
 - Custom errors for gas efficiency
+- Predictive failure prevention
 
-### Upgrade Safety
-- UUPS proxy pattern
-- Storage layout preservation
-- Admin-controlled upgrades
+### Architecture Benefits
+- Clone pattern for gas efficiency
+- Isolated user contract instances
+- Event-driven monitoring integration
+- Modular approval health system
 
 ## 📊 Gas Optimization
 
 The contracts are optimized for gas efficiency:
 
-- Custom errors instead of require strings
-- Efficient storage packing
-- Minimal external calls
-- Batch operations where possible
+- **Clone pattern**: ~90% gas savings vs proxy deployment
+- **Struct separation**: Avoids "stack too deep" compilation errors
+- **Function splitting**: Reduces complexity and gas costs
+- **Custom errors**: Gas-efficient error handling
+- **Efficient storage**: Packed structs and optimized mappings
+- **Piggyback monitoring**: Health checks during payment execution
+
+### Typical Gas Costs
+- Deploy clone: ~100k gas
+- Create mandate: ~150k gas  
+- Execute payment: ~80k gas
+- Health check: ~20k gas (included in payment)
 
 ## 🤝 Integration
 
@@ -208,13 +308,27 @@ contract YourContract {
 
 ### For Backend Services
 
-Monitor events for payment execution:
+Monitor events for comprehensive automation:
 
 ```javascript
 const mandateContract = new ethers.Contract(address, abi, provider);
 
+// Payment monitoring
 mandateContract.on("PaymentExecuted", (mandateId, payer, payee, token, amount, timestamp) => {
-    // Handle payment execution
+    console.log(`Payment executed: ${amount} tokens`);
+});
+
+// Approval health monitoring
+mandateContract.on("ApprovalLowWarning", (mandateId, remaining, paymentsLeft, recommended) => {
+    notifyUser(mandateId, `Warning: ${paymentsLeft} payments remaining. Top up with ${recommended} tokens.`);
+});
+
+mandateContract.on("ApprovalCritical", (mandateId, remaining, recommended) => {
+    alertUser(mandateId, `Critical: Top up with ${recommended} tokens to avoid auto-pause.`);
+});
+
+mandateContract.on("MandateAutoPaused", (mandateId, reason) => {
+    notifyUser(mandateId, `Mandate paused: ${reason}. Please top up and unpause.`);
 });
 ```
 
@@ -222,9 +336,18 @@ mandateContract.on("PaymentExecuted", (mandateId, payer, payee, token, amount, t
 
 - [ ] Multi-chain deployment (Ethereum, Polygon, Arbitrum)
 - [ ] Additional stablecoin support (DAI, FRAX)
+- [ ] Advanced approval strategies (time-based, dynamic thresholds)
 - [ ] Batch payment execution
 - [ ] Payment scheduling improvements
 - [ ] Integration with DeFi protocols
+- [ ] Mobile SDK for approval management
+- [ ] Analytics dashboard for payment patterns
+
+## 📚 Documentation
+
+- **[MANDATE_FLOW.md](./MANDATE_FLOW.md)** - Detailed contract flow and design decisions
+- **[Contract Documentation](./src/)** - Inline code documentation
+- **[Test Examples](./test/)** - Comprehensive test scenarios
 
 ## 🛠 Development
 
@@ -268,5 +391,3 @@ MIT License - see LICENSE file for details.
 - [Foundry Documentation](https://book.getfoundry.sh/)
 
 ---
-
-Built with ❤️ for the future of recurring payments on Base.
