@@ -5,13 +5,14 @@ import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/utils/Pausable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 
 /**
  * @title Mandate
  * @dev Recurring stablecoin payment contract with user-controlled mandates
  * @notice Allows users to set up automatic recurring payments with full control
  */
-contract Mandate is AccessControl, Pausable {
+contract Mandate is AccessControl, Pausable, Initializable {
     using SafeERC20 for IERC20;
 
     // Roles
@@ -48,9 +49,6 @@ contract Mandate is AccessControl, Pausable {
 
     // Supported tokens
     mapping(address => bool) public supportedTokens;
-
-    // Initialization flag for clones
-    bool private initialized;
 
     // Events
     event MandateCreated(
@@ -101,22 +99,14 @@ contract Mandate is AccessControl, Pausable {
     error Mandate_UnsupportedToken();
     error Mandate_InvalidParameters();
     error Mandate_MandateExpired();
-    error Mandate_AlreadyInitialized();
     error Mandate_SystemPaused();
     error Mandate_NotSystemPaused();
 
-    modifier onlyOnce() {
-        if (initialized) revert Mandate_AlreadyInitialized();
-        initialized = true;
-        _;
-    }
-
     constructor() {
-        // Disable initialization for the implementation contract
-        initialized = true;
+        _disableInitializers();
     }
 
-    function initialize(address _admin, address[] memory _supportedTokens) external onlyOnce {
+    function initialize(address _admin, address[] memory _supportedTokens) external initializer {
         _grantRole(DEFAULT_ADMIN_ROLE, _admin);
 
         // Add supported tokens
