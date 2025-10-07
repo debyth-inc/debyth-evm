@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
-import "@openzeppelin/contracts/access/AccessControl.sol";
-import "@openzeppelin/contracts/utils/Pausable.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import "@openzeppelin/contracts/proxy/utils/Initializable.sol";
+import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 
 /**
  * @title Mandate
@@ -18,7 +18,33 @@ contract Mandate is AccessControl, Pausable, Initializable {
     // Roles
     bytes32 public constant EXECUTOR_ROLE = keccak256("EXECUTOR_ROLE");
 
+    // Enums
+    enum DebitType {
+        Fixed, // Must debit exact perPaymentLimit
+        Variable // Can debit any amount up to perPaymentLimit
+    }
+
+    enum Frequency {
+        Daily, // Payment occurs daily
+        Monthly, // Payment occurs monthly
+        Annually // Payment occurs annually
+    }
+
     // Structs
+    struct CreateMandateParams {
+        address payee;
+        address token;
+        uint256 totalLimit;
+        uint256 perPaymentLimit;
+        uint256 frequency;
+        uint256 startTime;
+        uint256 endTime;
+        DebitType debitType;
+        Frequency frequencyType;
+        bool isUnlimitedSpend;
+        address authority;
+    }
+
     struct MandateData {
         address payer; // User who created the mandate
         address payee; // Who receives the payments
@@ -32,6 +58,10 @@ contract Mandate is AccessControl, Pausable, Initializable {
         uint256 lastPaymentTime; // Timestamp of last payment
         bool isActive; // Whether mandate is active
         uint256 createdAt; // Creation timestamp
+        DebitType debitType; // Fixed or Variable debit type
+        Frequency frequencyType; // Daily, Monthly, or Annually (only relevant for Fixed debit type)
+        bool isUnlimitedSpend; // If true, no total limit enforced
+        address authority; // Authority who can also cancel (optional, address(0) if not set)
     }
 
     struct ApprovalSettings {
@@ -60,7 +90,9 @@ contract Mandate is AccessControl, Pausable, Initializable {
         uint256 perPaymentLimit,
         uint256 frequency,
         uint256 startTime,
-        uint256 endTime
+        uint256 endTime,
+        DebitType debitType,
+        Frequency frequencyType
     );
 
     event PaymentExecuted(
@@ -101,6 +133,8 @@ contract Mandate is AccessControl, Pausable, Initializable {
     error Mandate_MandateExpired();
     error Mandate_SystemPaused();
     error Mandate_NotSystemPaused();
+    error Mandate_InvalidAmountForFixedDebit();
+    error Mandate_InvalidAmountForVariableDebit();
 
     constructor() {
         _disableInitializers();
@@ -120,66 +154,83 @@ contract Mandate is AccessControl, Pausable, Initializable {
 
     /**
      * @dev Creates a new payment mandate
-     * @param _payee Address to receive payments
-     * @param _token Token address (USDC/USDT)
-     * @param _totalLimit Maximum total amount that can be paid
-     * @param _perPaymentLimit Maximum amount per payment
-     * @param _frequency Payment frequency in seconds
-     * @param _startTime When payments can start
-     * @param _endTime When mandate expires
+     * @param params Struct containing all mandate parameters
      */
-    function createMandate(
-        address _payee,
-        address _token,
-        uint256 _totalLimit,
-        uint256 _perPaymentLimit,
-        uint256 _frequency,
-        uint256 _startTime,
-        uint256 _endTime
-    ) external whenNotPaused returns (uint256) {
-        if (_payee == address(0) || _payee == msg.sender) {
-            revert Mandate_InvalidParameters();
-        }
-        if (!supportedTokens[_token]) revert Mandate_UnsupportedToken();
-        if (_totalLimit == 0 || _perPaymentLimit == 0) {
-            revert Mandate_InvalidParameters();
-        }
-        if (_perPaymentLimit > _totalLimit) revert Mandate_InvalidParameters();
-        if (_frequency == 0) revert Mandate_InvalidParameters();
-        if (_startTime < block.timestamp) revert Mandate_InvalidParameters();
-        if (_endTime <= _startTime) revert Mandate_InvalidParameters();
-
-        uint256 mandateId = nextMandateId++;
-
-        mandates[mandateId] = MandateData({
-            payer: msg.sender,
-            payee: _payee,
-            token: _token,
-            totalLimit: _totalLimit,
-            perPaymentLimit: _perPaymentLimit,
-            frequency: _frequency,
-            startTime: _startTime,
-            endTime: _endTime,
-            totalPaid: 0,
-            lastPaymentTime: 0,
-            isActive: true,
-            createdAt: block.timestamp
-        });
-
-        approvalSettings[mandateId] = ApprovalSettings({
-            lowAllowanceThreshold: 3, // Default: warn when 3 payments remaining
-            criticalThreshold: 1, // Default: pause when 1 payment remaining
-            autoPauseEnabled: true, // Default: auto-pause enabled
-            isPausedBySystem: false
-        });
+    function createMandate(CreateMandateParams calldata params) external whenNotPaused returns (uint256) {
+        _validateMandateParams(params);
+        uint256 mandateId = _createMandateData(params);
+        _initializeApprovalSettings(mandateId);
 
         userMandates[msg.sender].push(mandateId);
 
         emit MandateCreated(
-            mandateId, msg.sender, _payee, _token, _totalLimit, _perPaymentLimit, _frequency, _startTime, _endTime
+            mandateId,
+            msg.sender,
+            params.payee,
+            params.token,
+            params.totalLimit,
+            params.perPaymentLimit,
+            params.frequency,
+            params.startTime,
+            params.endTime,
+            params.debitType,
+            params.frequencyType
         );
 
         return mandateId;
+    }
+
+    function _validateMandateParams(CreateMandateParams calldata params) internal view {
+        if (params.payee == address(0) || params.payee == msg.sender) {
+            revert Mandate_InvalidParameters();
+        }
+        if (!supportedTokens[params.token]) revert Mandate_UnsupportedToken();
+        if (params.perPaymentLimit == 0) revert Mandate_InvalidParameters();
+        if (!params.isUnlimitedSpend && params.totalLimit == 0) {
+            revert Mandate_InvalidParameters();
+        }
+        if (!params.isUnlimitedSpend && params.perPaymentLimit > params.totalLimit) {
+            revert Mandate_InvalidParameters();
+        }
+        if (params.frequency == 0) revert Mandate_InvalidParameters();
+        if (params.startTime < block.timestamp) revert Mandate_InvalidParameters();
+        if (params.endTime <= params.startTime) revert Mandate_InvalidParameters();
+        if (params.authority == msg.sender) revert Mandate_InvalidParameters();
+    }
+
+    function _createMandateData(CreateMandateParams calldata params) internal returns (uint256) {
+        uint256 mandateId = nextMandateId++;
+        uint256 effectiveTotalLimit = params.isUnlimitedSpend ? type(uint256).max : params.totalLimit;
+
+        mandates[mandateId] = MandateData({
+            payer: msg.sender,
+            payee: params.payee,
+            token: params.token,
+            totalLimit: effectiveTotalLimit,
+            perPaymentLimit: params.perPaymentLimit,
+            frequency: params.frequency,
+            startTime: params.startTime,
+            endTime: params.endTime,
+            totalPaid: 0,
+            lastPaymentTime: 0,
+            isActive: true,
+            createdAt: block.timestamp,
+            debitType: params.debitType,
+            frequencyType: params.frequencyType,
+            isUnlimitedSpend: params.isUnlimitedSpend,
+            authority: params.authority
+        });
+
+        return mandateId;
+    }
+
+    function _initializeApprovalSettings(uint256 mandateId) internal {
+        approvalSettings[mandateId] = ApprovalSettings({
+            lowAllowanceThreshold: 3,
+            criticalThreshold: 1,
+            autoPauseEnabled: true,
+            isPausedBySystem: false
+        });
     }
 
     /**
@@ -212,11 +263,20 @@ contract Mandate is AccessControl, Pausable, Initializable {
             }
         }
 
-        // Check amount limits
-        if (_amount == 0 || _amount > mandate.perPaymentLimit) {
-            revert Mandate_PaymentExceedsLimit();
+        // Check debit type constraints
+        if (mandate.debitType == DebitType.Fixed) {
+            if (_amount != mandate.perPaymentLimit) {
+                revert Mandate_InvalidAmountForFixedDebit();
+            }
+        } else {
+            // Variable
+            if (_amount == 0 || _amount > mandate.perPaymentLimit) {
+                revert Mandate_InvalidAmountForVariableDebit();
+            }
         }
-        if (mandate.totalPaid + _amount > mandate.totalLimit) {
+
+        // Check total limit (unless unlimited)
+        if (!mandate.isUnlimitedSpend && mandate.totalPaid + _amount > mandate.totalLimit) {
             revert Mandate_PaymentExceedsLimit();
         }
 
@@ -245,14 +305,17 @@ contract Mandate is AccessControl, Pausable, Initializable {
     }
 
     /**
-     * @dev Cancels a mandate (only by the payer)
+     * @dev Cancels a mandate (by payer or authority)
      * @param _mandateId The mandate ID to cancel
      */
     function cancelMandate(uint256 _mandateId) external {
         MandateData storage mandate = mandates[_mandateId];
 
         if (mandate.payer == address(0)) revert Mandate_InvalidMandateId();
-        if (mandate.payer != msg.sender) revert Mandate_UnauthorizedCaller();
+        // Allow cancellation by payer or authority (if set)
+        if (mandate.payer != msg.sender && (mandate.authority == address(0) || mandate.authority != msg.sender)) {
+            revert Mandate_UnauthorizedCaller();
+        }
         if (!mandate.isActive) revert Mandate_MandateNotActive();
 
         mandate.isActive = false;
@@ -274,12 +337,15 @@ contract Mandate is AccessControl, Pausable, Initializable {
     {
         MandateData storage mandate = mandates[_mandateId];
 
+        // Check mandate state
         if (mandate.payer == address(0)) {
             return (false, "Invalid mandate ID");
         }
         if (!mandate.isActive) {
             return (false, "Mandate not active");
         }
+
+        // Check timing
         if (block.timestamp > mandate.endTime) {
             return (false, "Mandate expired");
         }
@@ -289,21 +355,28 @@ contract Mandate is AccessControl, Pausable, Initializable {
         if (mandate.lastPaymentTime > 0 && block.timestamp < mandate.lastPaymentTime + mandate.frequency) {
             return (false, "Payment too early - frequency constraint");
         }
-        if (_amount == 0 || _amount > mandate.perPaymentLimit) {
-            return (false, "Amount exceeds per-payment limit");
+
+        // Check amount
+        if (mandate.debitType == DebitType.Fixed) {
+            if (_amount != mandate.perPaymentLimit) {
+                return (false, "Fixed debit requires exact amount");
+            }
+        } else {
+            if (_amount == 0 || _amount > mandate.perPaymentLimit) {
+                return (false, "Variable debit amount invalid");
+            }
         }
-        if (mandate.totalPaid + _amount > mandate.totalLimit) {
+
+        if (!mandate.isUnlimitedSpend && mandate.totalPaid + _amount > mandate.totalLimit) {
             return (false, "Amount exceeds total limit");
         }
 
+        // Check balance and allowance
         IERC20 token = IERC20(mandate.token);
-        uint256 allowance = token.allowance(mandate.payer, address(this));
-        if (allowance < _amount) {
+        if (token.allowance(mandate.payer, address(this)) < _amount) {
             return (false, "Insufficient allowance");
         }
-
-        uint256 balance = token.balanceOf(mandate.payer);
-        if (balance < _amount) {
+        if (token.balanceOf(mandate.payer) < _amount) {
             return (false, "Insufficient balance");
         }
 
@@ -416,28 +489,26 @@ contract Mandate is AccessControl, Pausable, Initializable {
     {
         MandateData storage mandate = mandates[_mandateId];
 
-        // Base calculation: payments ahead * per payment limit
         uint256 baseAmount = _paymentsAhead * mandate.perPaymentLimit;
+        uint256 baseWithBuffer = baseAmount + (baseAmount / 10); // Add 10% buffer
 
-        // Add 10% buffer for gas variations and timing
-        uint256 buffer = baseAmount / 10;
-
-        // Consider remaining mandate duration
-        uint256 remainingTime = mandate.endTime > block.timestamp ? mandate.endTime - block.timestamp : 0;
-        uint256 maxPossiblePayments = remainingTime / mandate.frequency;
-
-        // Don't recommend more than what's needed for remaining duration
-        uint256 maxNeeded = maxPossiblePayments * mandate.perPaymentLimit;
+        uint256 maxNeeded = _calculateMaxNeeded(mandate);
         uint256 remainingLimit = mandate.totalLimit - mandate.totalPaid;
 
-        // Take the minimum of calculated amount, max possible payments, and remaining limit
-        recommendedAmount = baseAmount + buffer;
-        if (recommendedAmount > maxNeeded) recommendedAmount = maxNeeded;
-        if (recommendedAmount > remainingLimit) {
-            recommendedAmount = remainingLimit;
-        }
+        recommendedAmount = _getMinimum(baseWithBuffer, maxNeeded, remainingLimit);
 
         return recommendedAmount;
+    }
+
+    function _calculateMaxNeeded(MandateData storage mandate) internal view returns (uint256) {
+        uint256 remainingTime = mandate.endTime > block.timestamp ? mandate.endTime - block.timestamp : 0;
+        uint256 maxPossiblePayments = remainingTime / mandate.frequency;
+        return maxPossiblePayments * mandate.perPaymentLimit;
+    }
+
+    function _getMinimum(uint256 a, uint256 b, uint256 c) internal pure returns (uint256) {
+        uint256 min = a < b ? a : b;
+        return min < c ? min : c;
     }
 
     /**

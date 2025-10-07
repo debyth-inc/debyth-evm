@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
-import "forge-std/Test.sol";
-import "../src/MandateFactory.sol";
-import "../src/Mandate.sol";
-import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import {Test} from "forge-std/Test.sol";
+import {MandateFactory} from "../src/MandateFactory.sol";
+import {Mandate} from "../src/Mandate.sol";
+import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
 contract MockERC20 is ERC20 {
     constructor(string memory name, string memory symbol) ERC20(name, symbol) {
@@ -64,9 +64,19 @@ contract MandateIntegrationTest is Test {
         uint256 endTime = startTime + 365 days;
 
         vm.prank(payer);
-        uint256 mandateId = mandateContract.createMandate(
-            payee, address(usdc), TOTAL_LIMIT, PER_PAYMENT_LIMIT, FREQUENCY, startTime, endTime
-        );
+        uint256 mandateId = mandateContract.createMandate(Mandate.CreateMandateParams({
+            payee: payee,
+            token: address(usdc),
+            totalLimit: TOTAL_LIMIT,
+            perPaymentLimit: PER_PAYMENT_LIMIT,
+            frequency: FREQUENCY,
+            startTime: startTime,
+            endTime: endTime,
+            debitType: Mandate.DebitType.Variable,
+            frequencyType: Mandate.Frequency.Monthly,
+            isUnlimitedSpend: false,
+            authority: address(0)
+        }));
 
         assertEq(mandateId, 1);
 
@@ -119,9 +129,19 @@ contract MandateIntegrationTest is Test {
         uint256 endTime = startTime + 365 days;
 
         vm.prank(payer);
-        uint256 mandateId = mandateContract.createMandate(
-            payee, address(usdc), TOTAL_LIMIT, PER_PAYMENT_LIMIT, FREQUENCY, startTime, endTime
-        );
+        uint256 mandateId = mandateContract.createMandate(Mandate.CreateMandateParams({
+            payee: payee,
+            token: address(usdc),
+            totalLimit: TOTAL_LIMIT,
+            perPaymentLimit: PER_PAYMENT_LIMIT,
+            frequency: FREQUENCY,
+            startTime: startTime,
+            endTime: endTime,
+            debitType: Mandate.DebitType.Variable,
+            frequencyType: Mandate.Frequency.Monthly,
+            isUnlimitedSpend: false,
+            authority: address(0)
+        }));
 
         // Don't approve tokens (or approve insufficient amount)
         vm.prank(payer);
@@ -139,9 +159,19 @@ contract MandateIntegrationTest is Test {
         uint256 endTime = startTime + 365 days;
 
         vm.prank(payer);
-        uint256 mandateId = mandateContract.createMandate(
-            payee, address(usdc), TOTAL_LIMIT, PER_PAYMENT_LIMIT, FREQUENCY, startTime, endTime
-        );
+        uint256 mandateId = mandateContract.createMandate(Mandate.CreateMandateParams({
+            payee: payee,
+            token: address(usdc),
+            totalLimit: TOTAL_LIMIT,
+            perPaymentLimit: PER_PAYMENT_LIMIT,
+            frequency: FREQUENCY,
+            startTime: startTime,
+            endTime: endTime,
+            debitType: Mandate.DebitType.Variable,
+            frequencyType: Mandate.Frequency.Monthly,
+            isUnlimitedSpend: false,
+            authority: address(0)
+        }));
 
         vm.prank(payer);
         usdc.approve(address(mandateContract), TOTAL_LIMIT);
@@ -181,9 +211,19 @@ contract MandateIntegrationTest is Test {
         uint256 endTime = startTime + 1 days;
 
         vm.prank(payer);
-        uint256 mandateId = mandateContract.createMandate(
-            payee, address(usdc), TOTAL_LIMIT, PER_PAYMENT_LIMIT, FREQUENCY, startTime, endTime
-        );
+        uint256 mandateId = mandateContract.createMandate(Mandate.CreateMandateParams({
+            payee: payee,
+            token: address(usdc),
+            totalLimit: TOTAL_LIMIT,
+            perPaymentLimit: PER_PAYMENT_LIMIT,
+            frequency: FREQUENCY,
+            startTime: startTime,
+            endTime: endTime,
+            debitType: Mandate.DebitType.Variable,
+            frequencyType: Mandate.Frequency.Monthly,
+            isUnlimitedSpend: false,
+            authority: address(0)
+        }));
 
         vm.prank(payer);
         usdc.approve(address(mandateContract), TOTAL_LIMIT);
@@ -203,9 +243,19 @@ contract MandateIntegrationTest is Test {
         uint256 endTime = startTime + 365 days;
 
         vm.prank(payer);
-        uint256 mandateId = mandateContract.createMandate(
-            payee, address(usdc), TOTAL_LIMIT, PER_PAYMENT_LIMIT, FREQUENCY, startTime, endTime
-        );
+        uint256 mandateId = mandateContract.createMandate(Mandate.CreateMandateParams({
+            payee: payee,
+            token: address(usdc),
+            totalLimit: TOTAL_LIMIT,
+            perPaymentLimit: PER_PAYMENT_LIMIT,
+            frequency: FREQUENCY,
+            startTime: startTime,
+            endTime: endTime,
+            debitType: Mandate.DebitType.Variable,
+            frequencyType: Mandate.Frequency.Monthly,
+            isUnlimitedSpend: false,
+            authority: address(0)
+        }));
 
         // Approve tokens
         vm.prank(payer);
@@ -233,9 +283,19 @@ contract MandateIntegrationTest is Test {
         uint256 endTime = startTime + 365 days;
 
         vm.prank(payer);
-        uint256 mandateId = mandateContract.createMandate(
-            payee, address(usdc), TOTAL_LIMIT, PER_PAYMENT_LIMIT, FREQUENCY, startTime, endTime
-        );
+        uint256 mandateId = mandateContract.createMandate(Mandate.CreateMandateParams({
+            payee: payee,
+            token: address(usdc),
+            totalLimit: TOTAL_LIMIT,
+            perPaymentLimit: PER_PAYMENT_LIMIT,
+            frequency: FREQUENCY,
+            startTime: startTime,
+            endTime: endTime,
+            debitType: Mandate.DebitType.Variable,
+            frequencyType: Mandate.Frequency.Monthly,
+            isUnlimitedSpend: false,
+            authority: address(0)
+        }));
 
         // Check without allowance
         (bool canExecute, string memory reason) = mandateContract.canExecutePayment(mandateId, 50e6);
@@ -267,9 +327,19 @@ contract MandateIntegrationTest is Test {
         uint256 endTime = startTime + 365 days;
 
         vm.prank(payer);
-        uint256 mandateId = mandateContract.createMandate(
-            payee, address(usdc), TOTAL_LIMIT, PER_PAYMENT_LIMIT, FREQUENCY, startTime, endTime
-        );
+        uint256 mandateId = mandateContract.createMandate(Mandate.CreateMandateParams({
+            payee: payee,
+            token: address(usdc),
+            totalLimit: TOTAL_LIMIT,
+            perPaymentLimit: PER_PAYMENT_LIMIT,
+            frequency: FREQUENCY,
+            startTime: startTime,
+            endTime: endTime,
+            debitType: Mandate.DebitType.Variable,
+            frequencyType: Mandate.Frequency.Monthly,
+            isUnlimitedSpend: false,
+            authority: address(0)
+        }));
 
         // 1. Start with healthy approval (10 payments worth)
         uint256 healthyApproval = PER_PAYMENT_LIMIT * 10;
@@ -325,9 +395,19 @@ contract MandateIntegrationTest is Test {
         uint256 endTime = startTime + 365 days;
 
         vm.prank(payer);
-        uint256 mandateId = mandateContract.createMandate(
-            payee, address(usdc), TOTAL_LIMIT, PER_PAYMENT_LIMIT, FREQUENCY, startTime, endTime
-        );
+        uint256 mandateId = mandateContract.createMandate(Mandate.CreateMandateParams({
+            payee: payee,
+            token: address(usdc),
+            totalLimit: TOTAL_LIMIT,
+            perPaymentLimit: PER_PAYMENT_LIMIT,
+            frequency: FREQUENCY,
+            startTime: startTime,
+            endTime: endTime,
+            debitType: Mandate.DebitType.Variable,
+            frequencyType: Mandate.Frequency.Monthly,
+            isUnlimitedSpend: false,
+            authority: address(0)
+        }));
 
         // Set custom thresholds: warn at 5, pause at 2
         vm.prank(payer);

@@ -7,8 +7,8 @@ pragma solidity ^0.8.19;
  */
 interface IMandateRegistry {
     struct MandateData {
-        address payer;
-        address payee;
+        address payer; // user
+        address payee; // authority
         address token;
         uint256 totalLimit;
         uint256 perPaymentLimit;

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
-import "forge-std/Script.sol";
-import "../src/Mandate.sol";
-import "../src/MandateFactory.sol";
+import {Script, console} from "forge-std/Script.sol";
+import {Mandate} from "../src/Mandate.sol";
+import {MandateFactory} from "../src/MandateFactory.sol";
 
 contract DeployFactoryScript is Script {
     // Base network token addresses
