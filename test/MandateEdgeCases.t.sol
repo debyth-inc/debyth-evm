@@ -249,12 +249,15 @@ contract MandateEdgeCasesTest is Test {
 
         // Execute 9 full payments (900e6)
         for (uint256 i = 0; i < 9; i++) {
+            if (i > 0) {
+                vm.warp(block.timestamp + FREQUENCY);
+            }
             vm.prank(executor);
             mandate.executePayment(mandateId, PER_PAYMENT_LIMIT);
-            vm.warp(block.timestamp + FREQUENCY);
         }
 
         // Remaining: 100e6, can execute one more full payment
+        vm.warp(block.timestamp + FREQUENCY);
         vm.prank(executor);
         mandate.executePayment(mandateId, PER_PAYMENT_LIMIT);
 
@@ -408,9 +411,11 @@ contract MandateEdgeCasesTest is Test {
 
         // Execute half of total limit
         for (uint256 i = 0; i < 5; i++) {
+            if (i > 0) {
+                vm.warp(block.timestamp + FREQUENCY);
+            }
             vm.prank(executor);
             mandate.executePayment(mandateId, PER_PAYMENT_LIMIT);
-            vm.warp(block.timestamp + FREQUENCY);
         }
 
         // Request recommendation for many payments

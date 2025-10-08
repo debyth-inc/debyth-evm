@@ -838,11 +838,12 @@ contract MandateSecurityTest is Test {
         vm.prank(executor);
         mandate.executePayment(mandateId, 30e6);
 
-        vm.warp(block.timestamp + FREQUENCY);
+        uint256 firstPaymentTime = block.timestamp;
+        vm.warp(firstPaymentTime + FREQUENCY);
         vm.prank(executor);
         mandate.executePayment(mandateId, 70e6);
 
-        vm.warp(block.timestamp + FREQUENCY);
+        vm.warp(firstPaymentTime + 2 * FREQUENCY);
         vm.prank(executor);
         mandate.executePayment(mandateId, PER_PAYMENT_LIMIT);
     }
@@ -858,7 +859,7 @@ contract MandateSecurityTest is Test {
             perPaymentLimit: PER_PAYMENT_LIMIT,
             frequency: FREQUENCY,
             startTime: block.timestamp,
-            endTime: block.timestamp + 365 days,
+            endTime: block.timestamp + 720 days, // Extended to accommodate 20 payments
             debitType: Mandate.DebitType.Variable,
             frequencyType: Mandate.Frequency.Monthly,
             isUnlimitedSpend: true, // Unlimited
@@ -870,9 +871,11 @@ contract MandateSecurityTest is Test {
 
         // Execute many payments
         for (uint256 i = 0; i < 20; i++) {
+            if (i > 0) {
+                vm.warp(block.timestamp + FREQUENCY);
+            }
             vm.prank(executor);
             mandate.executePayment(mandateId, PER_PAYMENT_LIMIT);
-            vm.warp(block.timestamp + FREQUENCY);
         }
 
         Mandate.MandateData memory m = mandate.getMandate(mandateId);
