@@ -22,6 +22,7 @@ contract Mandate is AccessControl, Pausable, Initializable {
     enum DebitType {
         Fixed, // Must debit exact perPaymentLimit
         Variable // Can debit any amount up to perPaymentLimit
+
     }
 
     enum Frequency {
@@ -29,6 +30,7 @@ contract Mandate is AccessControl, Pausable, Initializable {
         Weekly, // Payment occurs weekly
         Monthly, // Payment occurs monthly
         Annually // Payment occurs annually
+
     }
 
     // Structs
