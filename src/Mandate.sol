@@ -26,6 +26,7 @@ contract Mandate is AccessControl, Pausable, Initializable {
 
     enum Frequency {
         Daily, // Payment occurs daily
+        Weekly, // Payment occurs weekly
         Monthly, // Payment occurs monthly
         Annually // Payment occurs annually
     }
@@ -57,6 +58,7 @@ contract Mandate is AccessControl, Pausable, Initializable {
         uint256 totalPaid; // Total amount paid so far
         uint256 lastPaymentTime; // Timestamp of last payment
         bool isActive; // Whether mandate is active
+        bool isApproved; // Whether user has approved the mandate
         uint256 createdAt; // Creation timestamp
         DebitType debitType; // Fixed or Variable debit type
         Frequency frequencyType; // Daily, Monthly, or Annually (only relevant for Fixed debit type)
@@ -106,6 +108,8 @@ contract Mandate is AccessControl, Pausable, Initializable {
 
     event MandateCanceled(uint256 indexed mandateId, address indexed payer, uint256 timestamp);
 
+    event MandateApproved(uint256 indexed mandateId, address indexed user, uint256 timestamp);
+
     event ExecutorAdded(address indexed executor);
     event ExecutorRemoved(address indexed executor);
     event TokenSupported(address indexed token, bool supported);
@@ -135,6 +139,8 @@ contract Mandate is AccessControl, Pausable, Initializable {
     error Mandate_NotSystemPaused();
     error Mandate_InvalidAmountForFixedDebit();
     error Mandate_InvalidAmountForVariableDebit();
+    error Mandate_AlreadyApproved();
+    error Mandate_NotApproved();
 
     constructor() {
         _disableInitializers();
@@ -214,6 +220,7 @@ contract Mandate is AccessControl, Pausable, Initializable {
             totalPaid: 0,
             lastPaymentTime: 0,
             isActive: true,
+            isApproved: true, // Auto-approved when user creates their own mandate
             createdAt: block.timestamp,
             debitType: params.debitType,
             frequencyType: params.frequencyType,
@@ -234,6 +241,106 @@ contract Mandate is AccessControl, Pausable, Initializable {
     }
 
     /**
+     * @dev Creates a new payment mandate for a user (authority/business creates on behalf of user)
+     * @param _user The user address who will be the payer
+     * @param params Struct containing all mandate parameters
+     * @notice Only executors can create mandates for users (business use case)
+     */
+    function createMandateForUser(address _user, CreateMandateParams calldata params)
+        external
+        onlyRole(EXECUTOR_ROLE)
+        whenNotPaused
+        returns (uint256)
+    {
+        if (_user == address(0) || params.payee == address(0) || params.payee == _user) {
+            revert Mandate_InvalidParameters();
+        }
+        if (!supportedTokens[params.token]) revert Mandate_UnsupportedToken();
+        if (params.perPaymentLimit == 0) revert Mandate_InvalidParameters();
+        if (!params.isUnlimitedSpend && params.totalLimit == 0) {
+            revert Mandate_InvalidParameters();
+        }
+        if (!params.isUnlimitedSpend && params.perPaymentLimit > params.totalLimit) {
+            revert Mandate_InvalidParameters();
+        }
+        if (params.frequency == 0) revert Mandate_InvalidParameters();
+        if (params.startTime < block.timestamp) revert Mandate_InvalidParameters();
+        if (params.endTime <= params.startTime) revert Mandate_InvalidParameters();
+
+        uint256 mandateId = nextMandateId++;
+        uint256 effectiveTotalLimit = params.isUnlimitedSpend ? type(uint256).max : params.totalLimit;
+
+        mandates[mandateId] = MandateData({
+            payer: _user, // User is the payer, not msg.sender
+            payee: params.payee,
+            token: params.token,
+            totalLimit: effectiveTotalLimit,
+            perPaymentLimit: params.perPaymentLimit,
+            frequency: params.frequency,
+            startTime: params.startTime,
+            endTime: params.endTime,
+            totalPaid: 0,
+            lastPaymentTime: 0,
+            isActive: false, // Not active until user approves
+            isApproved: false, // Not approved yet
+            createdAt: block.timestamp,
+            debitType: params.debitType,
+            frequencyType: params.frequencyType,
+            isUnlimitedSpend: params.isUnlimitedSpend,
+            authority: msg.sender // Creator becomes authority
+        });
+
+        _initializeApprovalSettings(mandateId);
+        userMandates[_user].push(mandateId);
+
+        emit MandateCreated(
+            mandateId,
+            _user,
+            params.payee,
+            params.token,
+            effectiveTotalLimit,
+            params.perPaymentLimit,
+            params.frequency,
+            params.startTime,
+            params.endTime,
+            params.debitType,
+            params.frequencyType
+        );
+
+        return mandateId;
+    }
+
+    /**
+     * @dev Approves a mandate (user must approve after authority creates it)
+     * @param _mandateId The mandate ID to approve
+     * @notice User must have already approved ERC20 tokens before calling this
+     */
+    function approveMandate(uint256 _mandateId) external whenNotPaused {
+        MandateData storage mandate = mandates[_mandateId];
+
+        // Validations
+        if (mandate.payer == address(0)) revert Mandate_InvalidMandateId();
+        if (mandate.payer != msg.sender) revert Mandate_UnauthorizedCaller();
+        if (mandate.isApproved) revert Mandate_AlreadyApproved();
+
+        // Check user has approved tokens BEFORE activating
+        IERC20 token = IERC20(mandate.token);
+        uint256 allowance = token.allowance(msg.sender, address(this));
+
+        uint256 requiredAllowance = mandate.isUnlimitedSpend ? mandate.totalLimit : mandate.totalLimit;
+
+        if (allowance < requiredAllowance) {
+            revert Mandate_InsufficientAllowance();
+        }
+
+        // Activate mandate
+        mandate.isApproved = true;
+        mandate.isActive = true;
+
+        emit MandateApproved(_mandateId, msg.sender, block.timestamp);
+    }
+
+    /**
      * @dev Executes a payment according to mandate rules
      * @param _mandateId The mandate ID to execute
      * @param _amount Amount to pay (must be <= perPaymentLimit)
@@ -249,6 +356,7 @@ contract Mandate is AccessControl, Pausable, Initializable {
         ApprovalSettings storage settings = approvalSettings[_mandateId];
 
         if (mandate.payer == address(0)) revert Mandate_InvalidMandateId();
+        if (!mandate.isApproved) revert Mandate_NotApproved();
         if (!mandate.isActive) revert Mandate_MandateNotActive();
         if (settings.isPausedBySystem) revert Mandate_SystemPaused();
         if (block.timestamp > mandate.endTime) revert Mandate_MandateExpired();
