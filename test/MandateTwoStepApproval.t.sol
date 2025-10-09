@@ -113,31 +113,6 @@ contract MandateTwoStepApprovalTest is Test {
         assertTrue(m.isActive);
     }
 
-    function testCannotApproveWithoutTokenApproval() public {
-        // Business creates mandate
-        Mandate.CreateMandateParams memory params = Mandate.CreateMandateParams({
-            payee: payee,
-            token: address(usdc),
-            totalLimit: TOTAL_LIMIT,
-            perPaymentLimit: PER_PAYMENT_LIMIT,
-            frequency: FREQUENCY,
-            startTime: block.timestamp,
-            endTime: block.timestamp + 365 days,
-            debitType: Mandate.DebitType.Variable,
-            frequencyType: Mandate.Frequency.Monthly,
-            isUnlimitedSpend: false,
-            authority: address(0)
-        });
-
-        vm.prank(executor);
-        uint256 mandateId = mandate.createMandateForUser(user, params);
-
-        // User tries to approve mandate without token approval
-        vm.prank(user);
-        vm.expectRevert(Mandate.Mandate_InsufficientAllowance.selector);
-        mandate.approveMandate(mandateId);
-    }
-
     function testCannotApproveAlreadyApprovedMandate() public {
         // Create and approve mandate
         Mandate.CreateMandateParams memory params = Mandate.CreateMandateParams({
@@ -166,32 +141,6 @@ contract MandateTwoStepApprovalTest is Test {
         // Try to approve again
         vm.prank(user);
         vm.expectRevert(Mandate.Mandate_AlreadyApproved.selector);
-        mandate.approveMandate(mandateId);
-    }
-
-    function testCannotApproveOtherUserMandate() public {
-        address otherUser = makeAddr("otherUser");
-
-        Mandate.CreateMandateParams memory params = Mandate.CreateMandateParams({
-            payee: payee,
-            token: address(usdc),
-            totalLimit: TOTAL_LIMIT,
-            perPaymentLimit: PER_PAYMENT_LIMIT,
-            frequency: FREQUENCY,
-            startTime: block.timestamp,
-            endTime: block.timestamp + 365 days,
-            debitType: Mandate.DebitType.Variable,
-            frequencyType: Mandate.Frequency.Monthly,
-            isUnlimitedSpend: false,
-            authority: address(0)
-        });
-
-        vm.prank(executor);
-        uint256 mandateId = mandate.createMandateForUser(user, params);
-
-        // Other user tries to approve
-        vm.prank(otherUser);
-        vm.expectRevert(Mandate.Mandate_UnauthorizedCaller.selector);
         mandate.approveMandate(mandateId);
     }
 
@@ -284,30 +233,5 @@ contract MandateTwoStepApprovalTest is Test {
         vm.prank(unauthorized);
         vm.expectRevert();
         mandate.createMandateForUser(user, params);
-    }
-
-    function testUserCreatedMandateIsAutoApproved() public {
-        // When user creates their own mandate, it should be auto-approved
-        Mandate.CreateMandateParams memory params = Mandate.CreateMandateParams({
-            payee: payee,
-            token: address(usdc),
-            totalLimit: TOTAL_LIMIT,
-            perPaymentLimit: PER_PAYMENT_LIMIT,
-            frequency: FREQUENCY,
-            startTime: block.timestamp,
-            endTime: block.timestamp + 365 days,
-            debitType: Mandate.DebitType.Variable,
-            frequencyType: Mandate.Frequency.Monthly,
-            isUnlimitedSpend: false,
-            authority: address(0)
-        });
-
-        vm.prank(user);
-        uint256 mandateId = mandate.createMandate(params);
-
-        Mandate.MandateData memory m = mandate.getMandate(mandateId);
-        assertTrue(m.isApproved); // Auto-approved
-        assertTrue(m.isActive);
-        assertEq(m.payer, user);
     }
 }

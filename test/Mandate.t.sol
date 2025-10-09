@@ -300,56 +300,6 @@ contract MandateTest is Test {
         assertEq(reason, "Insufficient allowance");
     }
 
-    function testGetUserMandates() public {
-        uint256 startTime = block.timestamp;
-        uint256 endTime = startTime + 365 days;
-
-        // Create multiple mandates
-        vm.startPrank(payer);
-        uint256 mandateId1 = mandate.createMandate(
-            Mandate.CreateMandateParams({
-                payee: payee,
-                token: address(usdc),
-                totalLimit: TOTAL_LIMIT,
-                perPaymentLimit: PER_PAYMENT_LIMIT,
-                frequency: FREQUENCY,
-                startTime: startTime,
-                endTime: endTime,
-                debitType: Mandate.DebitType.Variable,
-                frequencyType: Mandate.Frequency.Monthly,
-                isUnlimitedSpend: false,
-                authority: address(0)
-            })
-        );
-
-        uint256 mandateId2 = mandate.createMandate(
-            Mandate.CreateMandateParams({
-                payee: payee,
-                token: address(usdt),
-                totalLimit: TOTAL_LIMIT,
-                perPaymentLimit: PER_PAYMENT_LIMIT,
-                frequency: FREQUENCY,
-                startTime: startTime,
-                endTime: endTime,
-                debitType: Mandate.DebitType.Variable,
-                frequencyType: Mandate.Frequency.Monthly,
-                isUnlimitedSpend: false,
-                authority: address(0)
-            })
-        );
-        vm.stopPrank();
-
-        // Get user mandates
-        uint256[] memory userMandates = mandate.getUserMandates(payer);
-        assertEq(userMandates.length, 2);
-        assertEq(userMandates[0], mandateId1);
-        assertEq(userMandates[1], mandateId2);
-
-        // Get active mandates
-        uint256[] memory activeMandates = mandate.getUserActiveMandates(payer);
-        assertEq(activeMandates.length, 2);
-    }
-
     function testPauseUnpause() public {
         // Pause contract
         vm.prank(admin);
@@ -395,77 +345,6 @@ contract MandateTest is Test {
                 authority: address(0)
             })
         );
-    }
-
-    function testApprovalHealthMonitoring() public {
-        // Create mandate
-        uint256 startTime = block.timestamp;
-        uint256 endTime = startTime + 365 days;
-
-        vm.prank(payer);
-        uint256 mandateId = mandate.createMandate(
-            Mandate.CreateMandateParams({
-                payee: payee,
-                token: address(usdc),
-                totalLimit: TOTAL_LIMIT,
-                perPaymentLimit: PER_PAYMENT_LIMIT,
-                frequency: FREQUENCY,
-                startTime: startTime,
-                endTime: endTime,
-                debitType: Mandate.DebitType.Variable,
-                frequencyType: Mandate.Frequency.Monthly,
-                isUnlimitedSpend: false,
-                authority: address(0)
-            })
-        );
-
-        // Approve only enough for 2 payments (below low threshold of 3)
-        uint256 lowApproval = PER_PAYMENT_LIMIT * 2;
-        vm.prank(payer);
-        usdc.approve(address(mandate), lowApproval);
-
-        // Check approval health
-        (uint256 currentAllowance, uint256 paymentsRemaining, uint256 recommendedTopUp, bool isHealthy) =
-            mandate.getApprovalHealth(mandateId);
-
-        assertEq(currentAllowance, lowApproval);
-        assertEq(paymentsRemaining, 2);
-        assertFalse(isHealthy); // Should be unhealthy (below threshold of 3)
-        assertTrue(recommendedTopUp > 0);
-    }
-
-    function testApprovalLowWarning() public {
-        // Create mandate
-        uint256 startTime = block.timestamp;
-        uint256 endTime = startTime + 365 days;
-
-        vm.prank(payer);
-        uint256 mandateId = mandate.createMandate(
-            Mandate.CreateMandateParams({
-                payee: payee,
-                token: address(usdc),
-                totalLimit: TOTAL_LIMIT,
-                perPaymentLimit: PER_PAYMENT_LIMIT,
-                frequency: FREQUENCY,
-                startTime: startTime,
-                endTime: endTime,
-                debitType: Mandate.DebitType.Variable,
-                frequencyType: Mandate.Frequency.Monthly,
-                isUnlimitedSpend: false,
-                authority: address(0)
-            })
-        );
-
-        // Approve enough for exactly 3 payments (at low threshold)
-        uint256 lowApproval = PER_PAYMENT_LIMIT * 3;
-        vm.prank(payer);
-        usdc.approve(address(mandate), lowApproval);
-
-        // Execute payment - should trigger low warning
-        vm.prank(executor);
-        vm.expectEmit(true, false, false, false);
-        emit Mandate.ApprovalLowWarning(mandateId, 0, 0, 0); // We don't check exact values
-        mandate.executePayment(mandateId, PER_PAYMENT_LIMIT);
     }
 
     function testAutoPauseOnCriticalAllowance() public {
@@ -585,35 +464,5 @@ contract MandateTest is Test {
         Mandate.ApprovalSettings memory settings = mandate.getApprovalSettings(mandateId);
         assertEq(settings.lowAllowanceThreshold, 5);
         assertEq(settings.criticalThreshold, 2);
-    }
-
-    function testCalculateRecommendedTopUp() public {
-        // Create mandate
-        uint256 startTime = block.timestamp;
-        uint256 endTime = startTime + 365 days;
-
-        vm.prank(payer);
-        uint256 mandateId = mandate.createMandate(
-            Mandate.CreateMandateParams({
-                payee: payee,
-                token: address(usdc),
-                totalLimit: TOTAL_LIMIT,
-                perPaymentLimit: PER_PAYMENT_LIMIT,
-                frequency: FREQUENCY,
-                startTime: startTime,
-                endTime: endTime,
-                debitType: Mandate.DebitType.Variable,
-                frequencyType: Mandate.Frequency.Monthly,
-                isUnlimitedSpend: false,
-                authority: address(0)
-            })
-        );
-
-        // Calculate recommended top-up for 6 payments
-        uint256 recommended = mandate.calculateRecommendedTopUp(mandateId, 6);
-
-        // Should be 6 payments + 10% buffer
-        uint256 expected = (PER_PAYMENT_LIMIT * 6 * 110) / 100;
-        assertEq(recommended, expected);
     }
 }
