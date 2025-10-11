@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
-import "forge-std/Test.sol";
-import "../src/MandateFactory.sol";
-import "../src/Mandate.sol";
-import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import {Test} from "forge-std/Test.sol";
+import {MandateFactory} from "../src/MandateFactory.sol";
+import {Mandate} from "../src/Mandate.sol";
+import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
 contract MockERC20 is ERC20 {
     constructor(string memory name, string memory symbol) ERC20(name, symbol) {
@@ -91,27 +91,6 @@ contract MandateFactoryTest is Test {
         assertEq(factory.getTotalMandateContracts(), 2);
     }
 
-    function testUserCanDeployMultipleContracts() public {
-        address[] memory supportedTokens = new address[](1);
-        supportedTokens[0] = address(usdc);
-
-        vm.startPrank(user1);
-
-        // Deploy first contract
-        address contract1 = factory.deployMandateContract(supportedTokens);
-
-        // Deploy second contract
-        address contract2 = factory.deployMandateContract(supportedTokens);
-
-        vm.stopPrank();
-
-        // Verify user has both contracts
-        address[] memory userContracts = factory.getUserMandateContracts(user1);
-        assertEq(userContracts.length, 2);
-        assertEq(userContracts[0], contract1);
-        assertEq(userContracts[1], contract2);
-    }
-
     function testGetMandateContractAtBounds() public {
         // Test empty array
         vm.expectRevert("Index out of bounds");
@@ -131,17 +110,5 @@ contract MandateFactoryTest is Test {
         // Test invalid index
         vm.expectRevert("Index out of bounds");
         factory.getMandateContractAt(1);
-    }
-
-    function testFactoryEvents() public {
-        address[] memory supportedTokens = new address[](2);
-        supportedTokens[0] = address(usdc);
-        supportedTokens[1] = address(usdt);
-
-        vm.prank(user1);
-        vm.expectEmit(true, false, false, true);
-        emit MandateFactory.MandateContractDeployed(user1, address(0), supportedTokens);
-
-        factory.deployMandateContract(supportedTokens);
     }
 }

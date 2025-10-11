@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
-import "./Mandate.sol";
-import "@openzeppelin/contracts/proxy/Clones.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
+import {Mandate} from "./Mandate.sol";
+import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
 /**
  * @title MandateFactory
  * @dev Factory contract for deploying mandate contracts using clones
  */
 contract MandateFactory is Ownable {
-    address public immutable mandateImplementation;
+    address public immutable MANDATE_IMPLEMENTATION;
 
     mapping(address => address[]) public userMandateContracts;
     address[] public allMandateContracts;
@@ -18,14 +18,14 @@ contract MandateFactory is Ownable {
     event MandateContractDeployed(address indexed deployer, address indexed mandateContract, address[] supportedTokens);
 
     constructor(address _mandateImplementation) Ownable(msg.sender) {
-        mandateImplementation = _mandateImplementation;
+        MANDATE_IMPLEMENTATION = _mandateImplementation;
     }
 
     /**
      * @dev Deploys a new mandate contract for a user using clones
      */
     function deployMandateContract(address[] memory supportedTokens) external returns (address) {
-        address clone = Clones.clone(mandateImplementation);
+        address clone = Clones.clone(MANDATE_IMPLEMENTATION);
 
         // Initialize the clone
         Mandate(clone).initialize(msg.sender, supportedTokens);
