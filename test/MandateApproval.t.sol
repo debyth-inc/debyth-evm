@@ -16,7 +16,7 @@ contract MockERC20 is ERC20 {
     }
 }
 
-contract MandateTwoStepApprovalTest is Test {
+contract MandateApprovalTest is Test {
     Mandate public mandate;
     MockERC20 public usdc;
 
@@ -27,9 +27,9 @@ contract MandateTwoStepApprovalTest is Test {
     }
 
     address public admin = makeAddr("admin");
-    address public executor = makeAddr("executor"); // Business/authority
-    address public twoStepUser = makeAddr("twoStepUser"); // End user
-    address public payee = makeAddr("payee"); // Service provider
+    address public executor = makeAddr("executor");
+    address public user = makeAddr("user");
+    address public payee = makeAddr("payee");
 
     uint256 constant TOTAL_LIMIT = 1000e6;
     uint256 constant AMOUNT_PER_DEBIT = 100e6;
@@ -51,11 +51,9 @@ contract MandateTwoStepApprovalTest is Test {
         vm.prank(admin);
         mandate.addExecutor(executor);
 
-        usdc.mint(twoStepUser, 10000e6);
+        usdc.mint(user, 10000e6);
         mandateIdCounter = 0;
     }
-
-    // ============ Two-Step Approval Flow Tests ============
 
     function testBusinessCreatesMandate() public {
         Mandate.CreateMandateParams memory params = Mandate.CreateMandateParams({
@@ -72,15 +70,12 @@ contract MandateTwoStepApprovalTest is Test {
             authority: executor
         });
 
-        // Business creates mandate for user
         vm.prank(executor);
         bytes32 mandateId = generateMandateId();
-        mandate.createMandate(twoStepUser, mandateId,
-            params);
+        mandate.createMandate(user, mandateId, params);
 
-        // Check mandate exists and is not approved/active yet
         Mandate.MandateData memory m = mandate.getMandate(mandateId);
-        assertEq(m.payer, twoStepUser);
+        assertEq(m.payer, user);
         assertEq(m.payee, payee);
         assertEq(m.authority, executor);
         assertFalse(m.isApproved);
@@ -88,7 +83,6 @@ contract MandateTwoStepApprovalTest is Test {
     }
 
     function testUserApprovesMandate() public {
-        // Step 1: Business creates mandate
         Mandate.CreateMandateParams memory params = Mandate.CreateMandateParams({
             payee: payee,
             token: address(usdc),
@@ -105,27 +99,57 @@ contract MandateTwoStepApprovalTest is Test {
 
         vm.prank(executor);
         bytes32 mandateId = generateMandateId();
-        mandate.createMandate(twoStepUser, mandateId,
-            params);
+        mandate.createMandate(user, mandateId, params);
 
-        // Step 2: User approves tokens
-        vm.prank(twoStepUser);
+        vm.startPrank(user);
+        usdc.approve(address(mandate), TOTAL_LIMIT);
+        vm.expectEmit(false, true, false, true);
+        emit Mandate.MandateApproved(mandateId, user, block.timestamp);
+        mandate.approveMandate(mandateId);
+        vm.stopPrank();
+
+        Mandate.MandateData memory m = mandate.getMandate(mandateId);
+        assertTrue(m.isApproved);
+        assertTrue(m.isActive);
+    }
+
+    function testBackendCanApproveMandateAfterUserApprovesTokens() public {
+        address backend = makeAddr("backend");
+
+        Mandate.CreateMandateParams memory params = Mandate.CreateMandateParams({
+            payee: payee,
+            token: address(usdc),
+            totalLimit: TOTAL_LIMIT,
+            amountPerDebit: AMOUNT_PER_DEBIT,
+            frequency: FREQUENCY,
+            startTime: block.timestamp,
+            endTime: block.timestamp + 365 days,
+            debitType: Mandate.DebitType.Variable,
+            frequencyType: Mandate.Frequency.Monthly,
+            isUnlimitedSpend: false,
+            authority: address(0)
+        });
+
+        vm.prank(executor);
+        bytes32 mandateId = generateMandateId();
+        mandate.createMandate(user, mandateId, params);
+
+        // User approves tokens
+        vm.prank(user);
         usdc.approve(address(mandate), TOTAL_LIMIT);
 
-        // Step 3: User approves mandate
-        vm.prank(twoStepUser);
+        // Backend activates mandate (no user interaction)
+        vm.prank(backend);
         vm.expectEmit(false, true, false, true);
-        emit Mandate.MandateApproved(mandateId, twoStepUser, block.timestamp);
+        emit Mandate.MandateApproved(mandateId, user, block.timestamp);
         mandate.approveMandate(mandateId);
 
-        // Check mandate is now approved and active
         Mandate.MandateData memory m = mandate.getMandate(mandateId);
         assertTrue(m.isApproved);
         assertTrue(m.isActive);
     }
 
     function testCannotApproveAlreadyApprovedMandate() public {
-        // Create and approve mandate
         Mandate.CreateMandateParams memory params = Mandate.CreateMandateParams({
             payee: payee,
             token: address(usdc),
@@ -142,23 +166,18 @@ contract MandateTwoStepApprovalTest is Test {
 
         vm.prank(executor);
         bytes32 mandateId = generateMandateId();
-        mandate.createMandate(twoStepUser, mandateId,
-            params);
+        mandate.createMandate(user, mandateId, params);
 
-        vm.prank(twoStepUser);
+        vm.startPrank(user);
         usdc.approve(address(mandate), TOTAL_LIMIT);
-
-        vm.prank(twoStepUser);
         mandate.approveMandate(mandateId);
 
-        // Try to approve again
-        vm.prank(twoStepUser);
         vm.expectRevert(Mandate.Mandate_AlreadyApproved.selector);
         mandate.approveMandate(mandateId);
+        vm.stopPrank();
     }
 
     function testCannotExecutePaymentBeforeApproval() public {
-        // Business creates mandate
         Mandate.CreateMandateParams memory params = Mandate.CreateMandateParams({
             payee: payee,
             token: address(usdc),
@@ -175,21 +194,17 @@ contract MandateTwoStepApprovalTest is Test {
 
         vm.prank(executor);
         bytes32 mandateId = generateMandateId();
-        mandate.createMandate(twoStepUser, mandateId,
-            params);
+        mandate.createMandate(user, mandateId, params);
 
-        // User approves tokens but not mandate
-        vm.prank(twoStepUser);
+        vm.prank(user);
         usdc.approve(address(mandate), TOTAL_LIMIT);
 
-        // Try to execute payment before approval
         vm.prank(executor);
         vm.expectRevert(Mandate.Mandate_NotApproved.selector);
         mandate.executeMandate(mandateId, 50e6);
     }
 
     function testCompleteFlowWithPayment() public {
-        // Step 1: Business creates mandate
         Mandate.CreateMandateParams memory params = Mandate.CreateMandateParams({
             payee: payee,
             token: address(usdc),
@@ -206,31 +221,77 @@ contract MandateTwoStepApprovalTest is Test {
 
         vm.prank(executor);
         bytes32 mandateId = generateMandateId();
-        mandate.createMandate(twoStepUser, mandateId,
-            params);
+        mandate.createMandate(user, mandateId, params);
 
-        // Step 2: User approves tokens
-        vm.prank(twoStepUser);
+        vm.startPrank(user);
         usdc.approve(address(mandate), TOTAL_LIMIT);
-
-        // Step 3: User approves mandate
-        vm.prank(twoStepUser);
         mandate.approveMandate(mandateId);
+        vm.stopPrank();
 
-        // Step 4: Business executes payment
         uint256 payeeBalanceBefore = usdc.balanceOf(payee);
 
         vm.prank(executor);
         mandate.executeMandate(mandateId, 50e6);
 
-        // Verify payment executed
         assertEq(usdc.balanceOf(payee), payeeBalanceBefore + 50e6);
 
         Mandate.MandateData memory m = mandate.getMandate(mandateId);
         assertEq(m.totalPaid, 50e6);
     }
 
-    function testOnlyExecutorCanCreateMandateForUser() public {
+
+    function testCannotApproveMandateWithoutTokenApproval() public {
+        Mandate.CreateMandateParams memory params = Mandate.CreateMandateParams({
+            payee: payee,
+            token: address(usdc),
+            totalLimit: TOTAL_LIMIT,
+            amountPerDebit: AMOUNT_PER_DEBIT,
+            frequency: FREQUENCY,
+            startTime: block.timestamp,
+            endTime: block.timestamp + 365 days,
+            debitType: Mandate.DebitType.Variable,
+            frequencyType: Mandate.Frequency.Monthly,
+            isUnlimitedSpend: false,
+            authority: address(0)
+        });
+
+        vm.prank(executor);
+        bytes32 mandateId = generateMandateId();
+        mandate.createMandate(user, mandateId, params);
+
+        vm.prank(user);
+        vm.expectRevert(Mandate.Mandate_InsufficientAllowance.selector);
+        mandate.approveMandate(mandateId);
+    }
+
+    function testCannotApproveMandateWithInsufficientAllowance() public {
+        Mandate.CreateMandateParams memory params = Mandate.CreateMandateParams({
+            payee: payee,
+            token: address(usdc),
+            totalLimit: TOTAL_LIMIT,
+            amountPerDebit: AMOUNT_PER_DEBIT,
+            frequency: FREQUENCY,
+            startTime: block.timestamp,
+            endTime: block.timestamp + 365 days,
+            debitType: Mandate.DebitType.Variable,
+            frequencyType: Mandate.Frequency.Monthly,
+            isUnlimitedSpend: false,
+            authority: address(0)
+        });
+
+        vm.prank(executor);
+        bytes32 mandateId = generateMandateId();
+        mandate.createMandate(user, mandateId, params);
+
+        vm.prank(user);
+        usdc.approve(address(mandate), TOTAL_LIMIT / 2);
+
+        vm.prank(user);
+        vm.expectRevert(Mandate.Mandate_InsufficientAllowance.selector);
+        mandate.approveMandate(mandateId);
+    }
+
+    function testOnlyExecutorCanCreateMandate() public {
         address unauthorized = makeAddr("unauthorized");
 
         Mandate.CreateMandateParams memory params = Mandate.CreateMandateParams({
@@ -250,6 +311,6 @@ contract MandateTwoStepApprovalTest is Test {
         vm.prank(unauthorized);
         vm.expectRevert();
         bytes32 mandateId = generateMandateId();
-        mandate.createMandate(twoStepUser, mandateId, params);
+        mandate.createMandate(user, mandateId, params);
     }
 }

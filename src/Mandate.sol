@@ -18,6 +18,9 @@ contract Mandate is AccessControl, Pausable, Initializable {
     // Roles
     bytes32 public constant EXECUTOR_ROLE = keccak256("EXECUTOR_ROLE");
 
+    // Constants
+    uint256 public constant UNLIMITED_ALLOWANCE = type(uint256).max;
+
     // Enums
     enum DebitType {
         Fixed, // Must debit exact amountPerDebit
@@ -49,29 +52,26 @@ contract Mandate is AccessControl, Pausable, Initializable {
     }
 
     struct MandateData {
-        address payer; // User who created the mandate
-        address payee; // Who receives the payments
-        address token; // USDC or USDT address
-        uint256 totalLimit; // Maximum total amount that can be paid
-        uint256 amountPerDebit; // Maximum amount per payment
-        uint256 frequency; // Payment frequency in seconds
-        uint256 startTime; // When payments can start
-        uint256 endTime; // When mandate expires
-        uint256 totalPaid; // Total amount paid so far
-        uint256 lastPaymentTime; // Timestamp of last payment
-        bool isActive; // Whether mandate is active
-        bool isApproved; // Whether user has approved the mandate
-        uint256 createdAt; // Creation timestamp
-        DebitType debitType; // Fixed or Variable debit type
-        Frequency frequencyType; // Daily, Monthly, or Annually (only relevant for Fixed debit type)
-        bool isUnlimitedSpend; // If true, no total limit enforced
-        address authority; // Authority who can also cancel (optional, address(0) if not set)
+        address payer;
+        address payee;
+        address token;
+        uint256 totalLimit;
+        uint256 amountPerDebit;
+        uint256 frequency;
+        uint256 startTime;
+        uint256 endTime;
+        uint256 totalPaid;
+        uint256 lastPaymentTime;
+        bool isActive;
+        bool isApproved;
+        uint256 createdAt;
+        DebitType debitType;
+        Frequency frequencyType;
+        bool isUnlimitedSpend;
+        address authority;
     }
 
-    // State variables
     mapping(bytes32 => MandateData) public mandates;
-
-    // Supported tokens
     mapping(address => bool) public supportedTokens;
 
     // Events
@@ -102,9 +102,7 @@ contract Mandate is AccessControl, Pausable, Initializable {
 
     event MandateApproved(bytes32 indexed mandateId, address indexed user, uint256 timestamp);
 
-    event MandateStateToggled(
-        bytes32 indexed mandateId, address indexed caller, bool newState, uint256 timestamp
-    );
+    event MandateStateToggled(bytes32 indexed mandateId, address indexed caller, bool newState, uint256 timestamp);
 
     event ExecutorAdded(address indexed executor);
     event ExecutorRemoved(address indexed executor);
@@ -176,7 +174,7 @@ contract Mandate is AccessControl, Pausable, Initializable {
 
         _createMandateData(_user, _mandateId, params);
 
-        uint256 effectiveTotalLimit = params.isUnlimitedSpend ? type(uint256).max : params.totalLimit;
+        uint256 effectiveTotalLimit = params.isUnlimitedSpend ? UNLIMITED_ALLOWANCE : params.totalLimit;
 
         emit MandateCreated(
             _mandateId,
@@ -195,12 +193,8 @@ contract Mandate is AccessControl, Pausable, Initializable {
         return _mandateId;
     }
 
-    function _createMandateData(
-        address _payer,
-        bytes32 _mandateId,
-        CreateMandateParams calldata params
-    ) internal {
-        uint256 effectiveTotalLimit = params.isUnlimitedSpend ? type(uint256).max : params.totalLimit;
+    function _createMandateData(address _payer, bytes32 _mandateId, CreateMandateParams calldata params) internal {
+        uint256 effectiveTotalLimit = params.isUnlimitedSpend ? UNLIMITED_ALLOWANCE : params.totalLimit;
 
         mandates[_mandateId] = MandateData({
             payer: _payer,
@@ -224,33 +218,29 @@ contract Mandate is AccessControl, Pausable, Initializable {
     }
 
     /**
-     * @dev Approves a mandate (user must approve after authority creates it)
+     * @dev Approves and activates a mandate
      * @param _mandateId The mandate ID to approve
-     * @notice User must have already approved ERC20 tokens before calling this
+     * @notice Can be called by anyone (user, backend, or relayer) to activate the mandate
+     *         Requires that the payer has already approved sufficient token allowance
      */
     function approveMandate(bytes32 _mandateId) external whenNotPaused {
         MandateData storage mandate = mandates[_mandateId];
 
-        // Validations
         if (mandate.payer == address(0)) revert Mandate_InvalidMandateId();
-        if (mandate.payer != msg.sender) revert Mandate_UnauthorizedCaller();
         if (mandate.isApproved) revert Mandate_AlreadyApproved();
+        if (mandate.isActive) revert Mandate_MandateNotActive();
 
-        // Check user has approved tokens BEFORE activating
+        // Verify payer has approved sufficient tokens before activating mandate
         IERC20 token = IERC20(mandate.token);
-        uint256 allowance = token.allowance(msg.sender, address(this));
-
-        uint256 requiredAllowance = mandate.isUnlimitedSpend ? mandate.totalLimit : mandate.totalLimit;
-
-        if (allowance < requiredAllowance) {
+        uint256 currentAllowance = token.allowance(mandate.payer, address(this));
+        if (currentAllowance < mandate.totalLimit) {
             revert Mandate_InsufficientAllowance();
         }
 
-        // Activate mandate
         mandate.isApproved = true;
         mandate.isActive = true;
 
-        emit MandateApproved(_mandateId, msg.sender, block.timestamp);
+        emit MandateApproved(_mandateId, mandate.payer, block.timestamp);
     }
 
     /**
