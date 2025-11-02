@@ -167,7 +167,9 @@ contract Mandate is AccessControl, Pausable, Initializable {
             revert Mandate_InvalidParameters();
         }
         if (params.frequency == 0) revert Mandate_InvalidParameters();
-        if (params.startTime < block.timestamp) revert Mandate_InvalidParameters();
+        // Allow startTime to be now or future (grace period for transaction mining on Base: ~2s block time)
+        // Reject if startTime is more than 15 seconds in the past (prevents backdating)
+        if (params.startTime + 15 < block.timestamp) revert Mandate_InvalidParameters();
         if (params.endTime <= params.startTime) revert Mandate_InvalidParameters();
 
         if (mandates[_mandateId].payer != address(0)) revert Mandate_MandateIdAlreadyExists();

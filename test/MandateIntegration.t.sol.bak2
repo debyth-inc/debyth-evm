@@ -17,6 +17,7 @@ contract MockERC20 is ERC20 {
 }
 
 contract MandateIntegrationTest is Test {
+    MandateFactory public factory;
     Mandate public implementation;
     Mandate public mandateContract;
     MockERC20 public usdc;
@@ -27,6 +28,7 @@ contract MandateIntegrationTest is Test {
         return keccak256(abi.encodePacked("mandate-", mandateIdCounter++));
     }
 
+    address public factoryOwner = makeAddr("factoryOwner");
     address public payer = makeAddr("payer");
     address public payee = makeAddr("payee");
     address public executor = makeAddr("executor");
@@ -42,23 +44,17 @@ contract MandateIntegrationTest is Test {
         // Deploy implementation
         implementation = new Mandate();
 
+        // Deploy factory
+        vm.prank(factoryOwner);
+        factory = new MandateFactory(address(implementation));
+
         // Deploy mandate contract for payer
         address[] memory supportedTokens = new address[](1);
         supportedTokens[0] = address(usdc);
 
-        bytes memory initData = abi.encodeWithSelector(
-            Mandate.initialize.selector,
-            payer,
-            supportedTokens
-        );
-
-        TransparentUpgradeableProxy proxy = new TransparentUpgradeableProxy(
-            address(implementation),
-            payer,
-            initData
-        );
-
-        mandateContract = Mandate(address(proxy));
+        vm.prank(payer);
+        address mandateAddr = factory.deployMandateContract(supportedTokens);
+        mandateContract = Mandate(mandateAddr);
 
         // Setup executor
         vm.prank(payer);

@@ -111,9 +111,7 @@ contract MandateSecurityTest is Test {
         supportedTokens[2] = address(feeToken);
 
         vm.prank(admin);
-        bytes memory initData = abi.encodeWithSelector(Mandate.initialize.selector, admin, supportedTokens);
-        TransparentUpgradeableProxy proxy = new TransparentUpgradeableProxy(address(implementation), admin, initData);
-        address mandateClone = address(proxy);
+        address mandateClone = factory.deployMandateContract(supportedTokens);
         mandate = Mandate(mandateClone);
 
         vm.prank(admin);

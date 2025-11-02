@@ -4,7 +4,7 @@ pragma solidity ^0.8.19;
 import {Test} from "forge-std/Test.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {Mandate} from "../src/Mandate.sol";
-import {TransparentUpgradeableProxy} from "@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol";
+import {MandateFactory} from "../src/MandateFactory.sol";
 
 contract MockERC20 is ERC20 {
     constructor(string memory name, string memory symbol) ERC20(name, symbol) {
@@ -68,26 +68,18 @@ contract MandateTest is Test {
         // Deploy implementation
         Mandate implementation = new Mandate();
 
+        // Deploy factory
+        MandateFactory factory = new MandateFactory(address(implementation));
+
         // Prepare supported tokens
         address[] memory supportedTokens = new address[](2);
         supportedTokens[0] = address(usdc);
         supportedTokens[1] = address(usdt);
 
-        // Prepare initialization data
-        bytes memory initData = abi.encodeWithSelector(
-            Mandate.initialize.selector,
-            admin,
-            supportedTokens
-        );
-
-        // Deploy proxy
-        TransparentUpgradeableProxy proxy = new TransparentUpgradeableProxy(
-            address(implementation),
-            admin,
-            initData
-        );
-
-        mandate = Mandate(address(proxy));
+        // Deploy mandate clone
+        vm.prank(admin);
+        address mandateClone = factory.deployMandateContract(supportedTokens);
+        mandate = Mandate(mandateClone);
 
         // Setup roles
         vm.prank(admin);
