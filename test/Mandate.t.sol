@@ -74,18 +74,10 @@ contract MandateTest is Test {
         supportedTokens[1] = address(usdt);
 
         // Prepare initialization data
-        bytes memory initData = abi.encodeWithSelector(
-            Mandate.initialize.selector,
-            admin,
-            supportedTokens
-        );
+        bytes memory initData = abi.encodeWithSelector(Mandate.initialize.selector, admin, supportedTokens);
 
         // Deploy proxy
-        TransparentUpgradeableProxy proxy = new TransparentUpgradeableProxy(
-            address(implementation),
-            admin,
-            initData
-        );
+        TransparentUpgradeableProxy proxy = new TransparentUpgradeableProxy(address(implementation), admin, initData);
 
         mandate = Mandate(address(proxy));
 
@@ -193,8 +185,6 @@ contract MandateTest is Test {
         vm.prank(payer);
         mandate.approveMandate(mandateId);
 
-       
-
         uint256 paymentAmount = 50e6; // 50 USDC
         uint256 payerBalanceBefore = usdc.balanceOf(payer);
         uint256 payeeBalanceBefore = usdc.balanceOf(payee);
@@ -246,8 +236,6 @@ contract MandateTest is Test {
         // Approve mandate
         vm.prank(payer);
         mandate.approveMandate(mandateId);
-
-
 
         // Execute first payment (Fixed requires exact amount)
         vm.prank(executor);
@@ -503,8 +491,6 @@ contract MandateTest is Test {
         vm.prank(payer);
         mandate.approveMandate(mandateId);
 
-       
-
         // Check if payment can be executed
         (bool canExecute, string memory reason) = mandate.canExecuteMandate(mandateId, 50e6);
         assertTrue(canExecute);
@@ -688,5 +674,4 @@ contract MandateTest is Test {
         vm.expectRevert(Mandate.Mandate_InvalidMandateId.selector);
         mandate.toggleMandateState(bytes32(uint256(999)));
     }
-
 }

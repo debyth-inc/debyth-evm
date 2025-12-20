@@ -670,7 +670,7 @@ contract MandateSecurityTest is Test {
         mandate.executeMandate(mandateId, AMOUNT_PER_DEBIT + 1);
     }
 
-    function testCannotCancelAlreadyCanceledMandate() public{
+    function testCannotCancelAlreadyCanceledMandate() public {
         vm.prank(executor);
         bytes32 mandateId = generateMandateId();
         mandate.createMandate(

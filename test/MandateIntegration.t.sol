@@ -46,17 +46,9 @@ contract MandateIntegrationTest is Test {
         address[] memory supportedTokens = new address[](1);
         supportedTokens[0] = address(usdc);
 
-        bytes memory initData = abi.encodeWithSelector(
-            Mandate.initialize.selector,
-            payer,
-            supportedTokens
-        );
+        bytes memory initData = abi.encodeWithSelector(Mandate.initialize.selector, payer, supportedTokens);
 
-        TransparentUpgradeableProxy proxy = new TransparentUpgradeableProxy(
-            address(implementation),
-            payer,
-            initData
-        );
+        TransparentUpgradeableProxy proxy = new TransparentUpgradeableProxy(address(implementation), payer, initData);
 
         mandateContract = Mandate(address(proxy));
 
@@ -258,8 +250,6 @@ contract MandateIntegrationTest is Test {
         // Approve mandate
         vm.prank(payer);
         mandateContract.approveMandate(mandateId);
-
-       
 
         // Execute first payment successfully
         vm.prank(executor);
