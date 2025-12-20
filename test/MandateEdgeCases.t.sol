@@ -171,8 +171,8 @@ contract MandateEdgeCasesTest is Test {
         vm.prank(payer);
         mandate.approveMandate(mandateId);
 
-        // After end time
-        vm.warp(endTime + 1);
+        // After end date (must be next day due to day-level granularity)
+        vm.warp(endTime + 1 days);
         vm.prank(executor);
         vm.expectRevert(Mandate.Mandate_MandateExpired.selector);
         mandate.executeMandate(mandateId, 50e6);

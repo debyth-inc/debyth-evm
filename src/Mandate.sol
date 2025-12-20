@@ -261,25 +261,32 @@ contract Mandate is AccessControl, Pausable, Initializable {
         if (mandate.payer == address(0)) revert Mandate_InvalidMandateId();
         if (!mandate.isApproved) revert Mandate_NotApproved();
         if (!mandate.isActive) revert Mandate_MandateNotActive();
-        if (block.timestamp > mandate.endTime) revert Mandate_MandateExpired();
-        if (block.timestamp < mandate.startTime) {
-            revert Mandate_ExecutionTooEarly();
-        }
 
-        // Check frequency constraint
-        if (mandate.lastPaymentTime > 0) {
-            if (block.timestamp < mandate.lastPaymentTime + mandate.frequency) {
-                revert Mandate_ExecutionTooEarly();
-            }
+        // Use day-level granularity for start/end date checks
+        // This allows execution anytime within the start/end dates
+        uint256 currentDay = block.timestamp / 1 days;
+        uint256 startDay = mandate.startTime / 1 days;
+        uint256 endDay = mandate.endTime / 1 days;
+
+        if (currentDay > endDay) revert Mandate_MandateExpired();
+        if (currentDay < startDay) {
+            revert Mandate_ExecutionTooEarly();
         }
 
         // Check debit type constraints
         if (mandate.debitType == DebitType.Fixed) {
+            // Fixed mandate: must debit exact amount and respect frequency
             if (_amount != mandate.amountPerDebit) {
                 revert Mandate_InvalidAmountForFixedDebit();
             }
+            // Check frequency constraint for fixed mandates
+            if (mandate.lastPaymentTime > 0) {
+                if (block.timestamp < mandate.lastPaymentTime + mandate.frequency) {
+                    revert Mandate_ExecutionTooEarly();
+                }
+            }
         } else {
-            // Variable
+            // Variable mandate: can debit any amount up to amountPerDebit, no frequency restriction
             if (_amount == 0 || _amount > mandate.amountPerDebit) {
                 revert Mandate_InvalidAmountForVariableDebit();
             }

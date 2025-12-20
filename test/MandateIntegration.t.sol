@@ -70,7 +70,7 @@ contract MandateIntegrationTest is Test {
     }
 
     function testFullMandateWorkflow() public {
-        // 1. Create mandate
+        // 1. Create mandate with Fixed debit type
         uint256 startTime = block.timestamp;
         uint256 endTime = startTime + 365 days;
 
@@ -87,7 +87,7 @@ contract MandateIntegrationTest is Test {
                 frequency: FREQUENCY,
                 startTime: startTime,
                 endTime: endTime,
-                debitType: Mandate.DebitType.Variable,
+                debitType: Mandate.DebitType.Fixed, // Fixed mandates enforce frequency
                 frequencyType: Mandate.Frequency.Monthly,
                 isUnlimitedSpend: false,
                 authority: address(0)
@@ -104,8 +104,8 @@ contract MandateIntegrationTest is Test {
 
         // Mandate created successfully
 
-        // 3. Execute first payment
-        uint256 paymentAmount = 50e6;
+        // 3. Execute first payment (Fixed requires exact amount)
+        uint256 paymentAmount = AMOUNT_PER_DEBIT;
         uint256 payerBalanceBefore = usdc.balanceOf(payer);
         uint256 payeeBalanceBefore = usdc.balanceOf(payee);
 
@@ -116,7 +116,7 @@ contract MandateIntegrationTest is Test {
         assertEq(usdc.balanceOf(payer), payerBalanceBefore - paymentAmount);
         assertEq(usdc.balanceOf(payee), payeeBalanceBefore + paymentAmount);
 
-        // 4. Try to execute payment too early (should fail)
+        // 4. Try to execute payment too early (should fail due to frequency)
         vm.prank(executor);
         vm.expectRevert(Mandate.Mandate_ExecutionTooEarly.selector);
         mandateContract.executeMandate(mandateId, paymentAmount);
@@ -219,8 +219,8 @@ contract MandateIntegrationTest is Test {
         vm.prank(payer);
         mandateContract.approveMandate(mandateId);
 
-        // Fast forward past expiration
-        vm.warp(endTime + 1);
+        // Fast forward past end date (must be next day due to day-level granularity)
+        vm.warp(endTime + 1 days);
 
         // Try to execute payment on expired mandate
         vm.prank(executor);

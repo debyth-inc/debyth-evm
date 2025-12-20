@@ -217,7 +217,7 @@ contract MandateTest is Test {
     }
 
     function testCannotExecutePaymentTooEarly() public {
-        // Create mandate
+        // Create mandate with Fixed debit type to test frequency constraint
         uint256 startTime = block.timestamp;
         uint256 endTime = startTime + 365 days;
 
@@ -234,7 +234,7 @@ contract MandateTest is Test {
                 frequency: FREQUENCY,
                 startTime: startTime,
                 endTime: endTime,
-                debitType: Mandate.DebitType.Variable,
+                debitType: Mandate.DebitType.Fixed, // Fixed mandates enforce frequency
                 frequencyType: Mandate.Frequency.Monthly,
                 isUnlimitedSpend: false,
                 authority: address(0)
@@ -247,21 +247,179 @@ contract MandateTest is Test {
         vm.prank(payer);
         mandate.approveMandate(mandateId);
 
-       
 
-        // Execute first payment
+
+        // Execute first payment (Fixed requires exact amount)
         vm.prank(executor);
-        mandate.executeMandate(mandateId, 50e6);
+        mandate.executeMandate(mandateId, AMOUNT_PER_DEBIT);
 
-        // Try to execute second payment immediately (should fail)
+        // Try to execute second payment immediately (should fail due to frequency)
         vm.prank(executor);
         vm.expectRevert(Mandate.Mandate_ExecutionTooEarly.selector);
-        mandate.executeMandate(mandateId, 50e6);
+        mandate.executeMandate(mandateId, AMOUNT_PER_DEBIT);
 
         // Fast forward time and try again (should succeed)
         vm.warp(block.timestamp + FREQUENCY);
         vm.prank(executor);
+        mandate.executeMandate(mandateId, AMOUNT_PER_DEBIT);
+    }
+
+    function testVariableMandateNoFrequencyRestriction() public {
+        // Create variable mandate
+        uint256 startTime = block.timestamp;
+        uint256 endTime = startTime + 365 days;
+
+        bytes32 mandateId = generateMandateId();
+        vm.prank(executor);
+        mandate.createMandate(
+            payer,
+            mandateId,
+            Mandate.CreateMandateParams({
+                payee: payee,
+                token: address(usdc),
+                totalLimit: TOTAL_LIMIT,
+                amountPerDebit: AMOUNT_PER_DEBIT,
+                frequency: FREQUENCY,
+                startTime: startTime,
+                endTime: endTime,
+                debitType: Mandate.DebitType.Variable, // Variable mandates don't enforce frequency
+                frequencyType: Mandate.Frequency.Monthly,
+                isUnlimitedSpend: false,
+                authority: address(0)
+            })
+        );
+
+        vm.prank(payer);
+        usdc.approve(address(mandate), TOTAL_LIMIT);
+
+        vm.prank(payer);
+        mandate.approveMandate(mandateId);
+
+        // Execute first payment
+        vm.prank(executor);
+        mandate.executeMandate(mandateId, 30e6);
+
+        // Variable mandates should allow immediate subsequent payments (no frequency restriction)
+        vm.prank(executor);
+        mandate.executeMandate(mandateId, 20e6);
+
+        // Execute third payment immediately as well
+        vm.prank(executor);
         mandate.executeMandate(mandateId, 50e6);
+
+        // Verify total paid
+        Mandate.MandateData memory m = mandate.getMandate(mandateId);
+        assertEq(m.totalPaid, 100e6);
+    }
+
+    function testFixedMandateImmediateExecutionThenFrequency() public {
+        // Create Fixed mandate with daily frequency
+        uint256 startTime = block.timestamp;
+        uint256 endTime = startTime + 365 days;
+        uint256 dailyFrequency = 1 days;
+
+        bytes32 mandateId = generateMandateId();
+        vm.prank(executor);
+        mandate.createMandate(
+            payer,
+            mandateId,
+            Mandate.CreateMandateParams({
+                payee: payee,
+                token: address(usdc),
+                totalLimit: TOTAL_LIMIT,
+                amountPerDebit: AMOUNT_PER_DEBIT,
+                frequency: dailyFrequency,
+                startTime: startTime,
+                endTime: endTime,
+                debitType: Mandate.DebitType.Fixed,
+                frequencyType: Mandate.Frequency.Daily,
+                isUnlimitedSpend: false,
+                authority: address(0)
+            })
+        );
+
+        vm.prank(payer);
+        usdc.approve(address(mandate), TOTAL_LIMIT);
+
+        vm.prank(payer);
+        mandate.approveMandate(mandateId);
+
+        // First execution: Should work immediately (same block as creation)
+        vm.prank(executor);
+        mandate.executeMandate(mandateId, AMOUNT_PER_DEBIT);
+
+        Mandate.MandateData memory m = mandate.getMandate(mandateId);
+        assertEq(m.totalPaid, AMOUNT_PER_DEBIT);
+        assertEq(m.lastPaymentTime, block.timestamp);
+
+        // Second execution immediately: Should FAIL (frequency constraint)
+        vm.prank(executor);
+        vm.expectRevert(Mandate.Mandate_ExecutionTooEarly.selector);
+        mandate.executeMandate(mandateId, AMOUNT_PER_DEBIT);
+
+        // Third execution after 23 hours: Should still FAIL
+        vm.warp(block.timestamp + 23 hours);
+        vm.prank(executor);
+        vm.expectRevert(Mandate.Mandate_ExecutionTooEarly.selector);
+        mandate.executeMandate(mandateId, AMOUNT_PER_DEBIT);
+
+        // Fourth execution after exactly 1 day: Should SUCCEED
+        vm.warp(m.lastPaymentTime + dailyFrequency);
+        vm.prank(executor);
+        mandate.executeMandate(mandateId, AMOUNT_PER_DEBIT);
+
+        m = mandate.getMandate(mandateId);
+        assertEq(m.totalPaid, AMOUNT_PER_DEBIT * 2);
+    }
+
+    function testVariableMandateImmediateExecutionMultipleTimes() public {
+        // Create Variable mandate - should allow multiple immediate executions
+        uint256 startTime = block.timestamp;
+        uint256 endTime = startTime + 365 days;
+
+        bytes32 mandateId = generateMandateId();
+        vm.prank(executor);
+        mandate.createMandate(
+            payer,
+            mandateId,
+            Mandate.CreateMandateParams({
+                payee: payee,
+                token: address(usdc),
+                totalLimit: TOTAL_LIMIT,
+                amountPerDebit: AMOUNT_PER_DEBIT,
+                frequency: 30 days, // This should be ignored for Variable
+                startTime: startTime,
+                endTime: endTime,
+                debitType: Mandate.DebitType.Variable,
+                frequencyType: Mandate.Frequency.Monthly,
+                isUnlimitedSpend: false,
+                authority: address(0)
+            })
+        );
+
+        vm.prank(payer);
+        usdc.approve(address(mandate), TOTAL_LIMIT);
+
+        vm.prank(payer);
+        mandate.approveMandate(mandateId);
+
+        // First execution: Immediate (same block as creation)
+        vm.prank(executor);
+        mandate.executeMandate(mandateId, 40e6);
+
+        // Second execution: Also immediate (no frequency check)
+        vm.prank(executor);
+        mandate.executeMandate(mandateId, 30e6);
+
+        // Third execution: Also immediate (no frequency check)
+        vm.prank(executor);
+        mandate.executeMandate(mandateId, 20e6);
+
+        Mandate.MandateData memory m = mandate.getMandate(mandateId);
+        assertEq(m.totalPaid, 90e6);
+
+        // All three payments happened in the same block
+        assertEq(m.lastPaymentTime, block.timestamp);
     }
 
     function testCancelMandate() public {
