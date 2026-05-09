@@ -4,7 +4,7 @@ pragma solidity ^0.8.19;
 import {Test} from "forge-std/Test.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {Mandate} from "../src/Mandate.sol";
-import {TransparentUpgradeableProxy} from "@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol";
+import {MandateFactory} from "../src/MandateFactory.sol";
 
 contract MockERC20 is ERC20 {
     constructor(string memory name, string memory symbol) ERC20(name, symbol) {
@@ -103,7 +103,7 @@ contract MandateSecurityTest is Test {
         feeToken = new FeeOnTransferToken();
 
         Mandate implementation = new Mandate();
-        // Deploy with proxy
+        MandateFactory factory = new MandateFactory(address(implementation));
 
         address[] memory supportedTokens = new address[](3);
         supportedTokens[0] = address(usdc);
@@ -111,9 +111,7 @@ contract MandateSecurityTest is Test {
         supportedTokens[2] = address(feeToken);
 
         vm.prank(admin);
-        bytes memory initData = abi.encodeWithSelector(Mandate.initialize.selector, admin, supportedTokens);
-        TransparentUpgradeableProxy proxy = new TransparentUpgradeableProxy(address(implementation), admin, initData);
-        address mandateClone = address(proxy);
+        address mandateClone = factory.deployMandateContract(supportedTokens);
         mandate = Mandate(mandateClone);
 
         vm.prank(admin);
@@ -182,6 +180,97 @@ contract MandateSecurityTest is Test {
         vm.prank(unauthorized);
         vm.expectRevert(Mandate.Mandate_UnauthorizedCaller.selector);
         mandate.cancelMandate(mandateId);
+    }
+
+    function testUnauthorizedUserCannotSetApprovalThresholds() public {
+        vm.prank(executor);
+        bytes32 mandateId = generateMandateId();
+        mandate.createMandate(
+            payer,
+            mandateId,
+            Mandate.CreateMandateParams({
+                payee: payee,
+                token: address(usdc),
+                totalLimit: TOTAL_LIMIT,
+                amountPerDebit: AMOUNT_PER_DEBIT,
+                frequency: FREQUENCY,
+                startTime: block.timestamp,
+                endTime: block.timestamp + 365 days,
+                debitType: Mandate.DebitType.Variable,
+                frequencyType: Mandate.Frequency.Monthly,
+                isUnlimitedSpend: false,
+                authority: address(0)
+            })
+        );
+
+        vm.prank(unauthorized);
+        vm.expectRevert(Mandate.Mandate_UnauthorizedCaller.selector);
+        mandate.setApprovalThresholds(mandateId, 5, 2);
+    }
+
+    function testUnauthorizedUserCannotUnpauseMandate() public {
+        vm.prank(executor);
+        bytes32 mandateId = generateMandateId();
+        mandate.createMandate(
+            payer,
+            mandateId,
+            Mandate.CreateMandateParams({
+                payee: payee,
+                token: address(usdc),
+                totalLimit: TOTAL_LIMIT,
+                amountPerDebit: AMOUNT_PER_DEBIT,
+                frequency: FREQUENCY,
+                startTime: block.timestamp,
+                endTime: block.timestamp + 365 days,
+                debitType: Mandate.DebitType.Variable,
+                frequencyType: Mandate.Frequency.Monthly,
+                isUnlimitedSpend: false,
+                authority: address(0)
+            })
+        );
+
+        // Approve tokens
+        vm.prank(payer);
+        usdc.approve(address(mandate), TOTAL_LIMIT);
+
+        // Approve mandate
+        vm.prank(payer);
+        mandate.approveMandate(mandateId);
+
+        // Trigger auto-pause
+        vm.prank(executor);
+        mandate.executeMandate(mandateId, AMOUNT_PER_DEBIT);
+
+        // Try to unpause as unauthorized user
+        vm.prank(unauthorized);
+        vm.expectRevert(Mandate.Mandate_UnauthorizedCaller.selector);
+        mandate.unpauseMandate(mandateId);
+    }
+
+    function testUnauthorizedUserCannotSetAutoPause() public {
+        vm.prank(executor);
+        bytes32 mandateId = generateMandateId();
+        mandate.createMandate(
+            payer,
+            mandateId,
+            Mandate.CreateMandateParams({
+                payee: payee,
+                token: address(usdc),
+                totalLimit: TOTAL_LIMIT,
+                amountPerDebit: AMOUNT_PER_DEBIT,
+                frequency: FREQUENCY,
+                startTime: block.timestamp,
+                endTime: block.timestamp + 365 days,
+                debitType: Mandate.DebitType.Variable,
+                frequencyType: Mandate.Frequency.Monthly,
+                isUnlimitedSpend: false,
+                authority: address(0)
+            })
+        );
+
+        vm.prank(unauthorized);
+        vm.expectRevert(Mandate.Mandate_UnauthorizedCaller.selector);
+        mandate.setAutoPause(mandateId, false);
     }
 
     // ============ Admin Function Tests ============
@@ -474,11 +563,11 @@ contract MandateSecurityTest is Test {
         );
     }
 
-    function testCanCreateMandateWithImmediateStartTime() public {
-        // Now we allow startTime in the past or present for immediate execution
+    function testCannotCreateMandateWithStartTimeInPast() public {
         vm.prank(executor);
+        vm.expectRevert(Mandate.Mandate_InvalidParameters.selector);
         bytes32 mandateId = generateMandateId();
-        bytes32 createdId = mandate.createMandate(
+        mandate.createMandate(
             payer,
             mandateId,
             Mandate.CreateMandateParams({
@@ -487,7 +576,7 @@ contract MandateSecurityTest is Test {
                 totalLimit: TOTAL_LIMIT,
                 amountPerDebit: AMOUNT_PER_DEBIT,
                 frequency: FREQUENCY,
-                startTime: block.timestamp, // Immediate
+                startTime: block.timestamp - 1, // Past
                 endTime: block.timestamp + 365 days,
                 debitType: Mandate.DebitType.Variable,
                 frequencyType: Mandate.Frequency.Monthly,
@@ -495,21 +584,6 @@ contract MandateSecurityTest is Test {
                 authority: address(0)
             })
         );
-
-        assertEq(createdId, mandateId);
-
-        // Verify we can execute immediately after approval
-        vm.prank(payer);
-        usdc.approve(address(mandate), TOTAL_LIMIT);
-
-        vm.prank(payer);
-        mandate.approveMandate(mandateId);
-
-        // Execute immediately without waiting
-        vm.prank(executor);
-        mandate.executeMandate(mandateId, AMOUNT_PER_DEBIT);
-
-        assertEq(usdc.balanceOf(payee), AMOUNT_PER_DEBIT);
     }
 
     function testCannotCreateMandateWithEndTimeBeforeStart() public {
@@ -670,6 +744,125 @@ contract MandateSecurityTest is Test {
         mandate.executeMandate(mandateId, AMOUNT_PER_DEBIT + 1);
     }
 
+    function testCannotExecutePaymentWhenSystemPaused() public {
+        vm.prank(executor);
+        bytes32 mandateId = generateMandateId();
+        mandate.createMandate(
+            payer,
+            mandateId,
+            Mandate.CreateMandateParams({
+                payee: payee,
+                token: address(usdc),
+                totalLimit: TOTAL_LIMIT,
+                amountPerDebit: AMOUNT_PER_DEBIT,
+                frequency: FREQUENCY,
+                startTime: block.timestamp,
+                endTime: block.timestamp + 365 days,
+                debitType: Mandate.DebitType.Variable,
+                frequencyType: Mandate.Frequency.Monthly,
+                isUnlimitedSpend: false,
+                authority: address(0)
+            })
+        );
+
+        // Approve tokens - approve TOTAL_LIMIT to pass mandate approval check
+        vm.prank(payer);
+        usdc.approve(address(mandate), TOTAL_LIMIT);
+
+        // Approve mandate
+        vm.prank(payer);
+        mandate.approveMandate(mandateId);
+
+        // Execute first payment
+        vm.prank(executor);
+        mandate.executeMandate(mandateId, AMOUNT_PER_DEBIT);
+
+        // Now reduce allowance to trigger auto-pause on next check
+        // Set allowance to exactly 1 payment worth (AMOUNT_PER_DEBIT)
+        // This will make paymentsRemaining = 1, which equals criticalThreshold (1)
+        // The next payment attempt will fail with SystemPaused after _checkApprovalHealth is called
+        vm.prank(payer);
+        usdc.approve(address(mandate), AMOUNT_PER_DEBIT);
+
+        // Manually trigger approval health check to set isPausedBySystem
+        mandate.checkApprovalHealth(mandateId);
+
+        // Should be paused now
+        vm.warp(block.timestamp + FREQUENCY);
+        vm.prank(executor);
+        vm.expectRevert(Mandate.Mandate_SystemPaused.selector);
+        mandate.executeMandate(mandateId, AMOUNT_PER_DEBIT);
+    }
+
+    function testCannotUnpauseNonPausedMandate() public {
+        vm.prank(executor);
+        bytes32 mandateId = generateMandateId();
+        mandate.createMandate(
+            payer,
+            mandateId,
+            Mandate.CreateMandateParams({
+                payee: payee,
+                token: address(usdc),
+                totalLimit: TOTAL_LIMIT,
+                amountPerDebit: AMOUNT_PER_DEBIT,
+                frequency: FREQUENCY,
+                startTime: block.timestamp,
+                endTime: block.timestamp + 365 days,
+                debitType: Mandate.DebitType.Variable,
+                frequencyType: Mandate.Frequency.Monthly,
+                isUnlimitedSpend: false,
+                authority: address(0)
+            })
+        );
+
+        // Approve tokens
+        vm.prank(payer);
+        usdc.approve(address(mandate), TOTAL_LIMIT);
+
+        // Approve mandate
+        vm.prank(payer);
+        mandate.approveMandate(mandateId);
+
+        vm.prank(payer);
+        vm.expectRevert(Mandate.Mandate_NotSystemPaused.selector);
+        mandate.unpauseMandate(mandateId);
+    }
+
+    function testCannotSetInvalidApprovalThresholds() public {
+        vm.prank(executor);
+        bytes32 mandateId = generateMandateId();
+        mandate.createMandate(
+            payer,
+            mandateId,
+            Mandate.CreateMandateParams({
+                payee: payee,
+                token: address(usdc),
+                totalLimit: TOTAL_LIMIT,
+                amountPerDebit: AMOUNT_PER_DEBIT,
+                frequency: FREQUENCY,
+                startTime: block.timestamp,
+                endTime: block.timestamp + 365 days,
+                debitType: Mandate.DebitType.Variable,
+                frequencyType: Mandate.Frequency.Monthly,
+                isUnlimitedSpend: false,
+                authority: address(0)
+            })
+        );
+
+        // Approve tokens
+        vm.prank(payer);
+        usdc.approve(address(mandate), TOTAL_LIMIT);
+
+        // Approve mandate
+        vm.prank(payer);
+        mandate.approveMandate(mandateId);
+
+        // Critical >= low (invalid)
+        vm.prank(payer);
+        vm.expectRevert(Mandate.Mandate_InvalidParameters.selector);
+        mandate.setApprovalThresholds(mandateId, 3, 5);
+    }
+
     function testCannotCancelAlreadyCanceledMandate() public {
         vm.prank(executor);
         bytes32 mandateId = generateMandateId();
@@ -768,6 +961,21 @@ contract MandateSecurityTest is Test {
     function testGetMandateRevertForInvalidId() public {
         vm.expectRevert(Mandate.Mandate_InvalidMandateId.selector);
         mandate.getMandate(bytes32(uint256(999)));
+    }
+
+    function testGetApprovalSettingsRevertForInvalidId() public {
+        vm.expectRevert(Mandate.Mandate_InvalidMandateId.selector);
+        mandate.getApprovalSettings(bytes32(uint256(999)));
+    }
+
+    function testCheckApprovalHealthRevertForInvalidId() public {
+        vm.expectRevert(Mandate.Mandate_InvalidMandateId.selector);
+        mandate.checkApprovalHealth(bytes32(uint256(999)));
+    }
+
+    function testGetApprovalHealthRevertForInvalidId() public {
+        vm.expectRevert(Mandate.Mandate_InvalidMandateId.selector);
+        mandate.getApprovalHealth(bytes32(uint256(999)));
     }
 
     // ============ Authority Tests ============
