@@ -28,505 +28,280 @@ contract MandateEdgeCasesTest is Test {
 
     address public admin = makeAddr("admin");
     address public executor = makeAddr("executor");
-    address public payer = makeAddr("payer");
-    address public payee = makeAddr("payee");
+    address public sender = makeAddr("sender");
+    address public recipient = makeAddr("recipient");
 
     uint256 constant TOTAL_LIMIT = 1000e6;
-    uint256 constant AMOUNT_PER_DEBIT = 100e6;
-    uint256 constant FREQUENCY = 30 days;
+    uint256 constant PER_EXECUTION_LIMIT = 100e6;
+    uint256 constant MIN_INTERVAL = 30 days;
+
+    function computePolicyHash(
+        Mandate.ChargeType chargeType,
+        Mandate.Frequency frequency,
+        uint256 minIntervalSeconds,
+        uint256 perExecutionLimit,
+        uint256 totalLimit,
+        uint256 startAt,
+        uint256 endAt
+    ) internal pure returns (bytes32) {
+        return keccak256(abi.encodePacked(
+            chargeType, frequency, minIntervalSeconds, perExecutionLimit, totalLimit, startAt, endAt
+        ));
+    }
 
     function setUp() public {
         usdc = new MockERC20("USD Coin", "USDC");
 
         Mandate implementation = new Mandate();
-        // Deploy with proxy
 
         address[] memory supportedTokens = new address[](1);
         supportedTokens[0] = address(usdc);
 
         vm.prank(admin);
-        bytes memory initData = abi.encodeWithSelector(Mandate.initialize.selector, admin, supportedTokens);
+        bytes memory initData = abi.encodeWithSelector(Mandate.initialize.selector, admin, supportedTokens, executor);
         TransparentUpgradeableProxy proxy = new TransparentUpgradeableProxy(address(implementation), admin, initData);
-        address mandateClone = address(proxy);
-        mandate = Mandate(mandateClone);
+        mandate = Mandate(address(proxy));
 
-        vm.prank(admin);
-        mandate.addExecutor(executor);
-
-        usdc.mint(payer, 10000e6);
+        usdc.mint(sender, 10000e6);
         mandateIdCounter = 0;
+    }
+
+    function _createVariableMandate(
+        bytes32 mandateId,
+        uint256 startAt,
+        uint256 endAt
+    ) internal {
+        address[] memory empty;
+        bytes32 policyHash = computePolicyHash(
+            Mandate.ChargeType.VARIABLE, Mandate.Frequency.MONTHLY, MIN_INTERVAL,
+            PER_EXECUTION_LIMIT, TOTAL_LIMIT, startAt, endAt
+        );
+        vm.prank(executor);
+        mandate.createMandate(
+            sender, mandateId, recipient, address(usdc),
+            TOTAL_LIMIT, PER_EXECUTION_LIMIT,
+            Mandate.ChargeType.VARIABLE, Mandate.Frequency.MONTHLY, MIN_INTERVAL,
+            startAt, endAt, empty, empty, policyHash
+        );
+    }
+
+    function _createFixedMandate(
+        bytes32 mandateId,
+        uint256 startAt,
+        uint256 endAt
+    ) internal {
+        address[] memory empty;
+        bytes32 policyHash = computePolicyHash(
+            Mandate.ChargeType.FIXED, Mandate.Frequency.MONTHLY, MIN_INTERVAL,
+            PER_EXECUTION_LIMIT, TOTAL_LIMIT, startAt, endAt
+        );
+        vm.prank(executor);
+        mandate.createMandate(
+            sender, mandateId, recipient, address(usdc),
+            TOTAL_LIMIT, PER_EXECUTION_LIMIT,
+            Mandate.ChargeType.FIXED, Mandate.Frequency.MONTHLY, MIN_INTERVAL,
+            startAt, endAt, empty, empty, policyHash
+        );
+    }
+
+    function _approveMandate(bytes32 mandateId) internal {
+        vm.prank(sender);
+        usdc.approve(address(mandate), TOTAL_LIMIT);
+
+        vm.prank(sender);
+        mandate.approveMandate(mandateId);
     }
 
     // ============ Timing Edge Cases ============
 
     function testExecutePaymentExactlyAtStartTime() public {
-        uint256 startTime = block.timestamp + 1 days;
+        uint256 startAt = block.timestamp + 10;
 
         bytes32 mandateId = generateMandateId();
-        vm.prank(executor);
-        mandate.createMandate(
-            payer,
-            mandateId,
-            Mandate.CreateMandateParams({
-                payee: payee,
-                token: address(usdc),
-                totalLimit: TOTAL_LIMIT,
-                amountPerDebit: AMOUNT_PER_DEBIT,
-                frequency: FREQUENCY,
-                startTime: startTime,
-                endTime: startTime + 365 days,
-                debitType: Mandate.DebitType.Variable,
-                frequencyType: Mandate.Frequency.Monthly,
-                isUnlimitedSpend: false,
-                authority: address(0)
-            })
-        );
+        _createVariableMandate(mandateId, startAt, startAt + 365 days);
 
-        // Approve tokens
-        vm.prank(payer);
+        vm.prank(sender);
         usdc.approve(address(mandate), TOTAL_LIMIT);
 
-        // Approve mandate
-        vm.prank(payer);
+        vm.prank(sender);
         mandate.approveMandate(mandateId);
 
-        // Before start time
         vm.expectRevert(Mandate.Mandate_ExecutionTooEarly.selector);
         vm.prank(executor);
-        mandate.executeMandate(mandateId, 50e6);
+        mandate.executeMandate(mandateId, 50e6, 1);
 
-        // Exactly at start time
-        vm.warp(startTime);
+        vm.warp(startAt);
         vm.prank(executor);
-        mandate.executeMandate(mandateId, 50e6);
+        mandate.executeMandate(mandateId, 50e6, 1);
     }
 
     function testExecutePaymentExactlyAtEndTime() public {
-        uint256 startTime = block.timestamp;
-        uint256 endTime = startTime + 1 days;
+        uint256 startAt = block.timestamp;
+        uint256 endAt = startAt + 1 days;
 
         bytes32 mandateId = generateMandateId();
+        _createVariableMandate(mandateId, startAt, endAt);
+        _approveMandate(mandateId);
+
+        vm.warp(endAt);
         vm.prank(executor);
-        mandate.createMandate(
-            payer,
-            mandateId,
-            Mandate.CreateMandateParams({
-                payee: payee,
-                token: address(usdc),
-                totalLimit: TOTAL_LIMIT,
-                amountPerDebit: AMOUNT_PER_DEBIT,
-                frequency: FREQUENCY,
-                startTime: startTime,
-                endTime: endTime,
-                debitType: Mandate.DebitType.Variable,
-                frequencyType: Mandate.Frequency.Monthly,
-                isUnlimitedSpend: false,
-                authority: address(0)
-            })
-        );
-
-        // Approve tokens
-        vm.prank(payer);
-        usdc.approve(address(mandate), TOTAL_LIMIT);
-
-        // Approve mandate
-        vm.prank(payer);
-        mandate.approveMandate(mandateId);
-
-        // At end time
-        vm.warp(endTime);
-        vm.prank(executor);
-        mandate.executeMandate(mandateId, 50e6);
+        mandate.executeMandate(mandateId, 50e6, 1);
     }
 
     function testCannotExecutePaymentAfterEndTime() public {
-        uint256 startTime = block.timestamp;
-        uint256 endTime = startTime + 1 days;
+        uint256 startAt = block.timestamp;
+        uint256 endAt = startAt + 1 days;
 
         bytes32 mandateId = generateMandateId();
-        vm.prank(executor);
-        mandate.createMandate(
-            payer,
-            mandateId,
-            Mandate.CreateMandateParams({
-                payee: payee,
-                token: address(usdc),
-                totalLimit: TOTAL_LIMIT,
-                amountPerDebit: AMOUNT_PER_DEBIT,
-                frequency: FREQUENCY,
-                startTime: startTime,
-                endTime: endTime,
-                debitType: Mandate.DebitType.Variable,
-                frequencyType: Mandate.Frequency.Monthly,
-                isUnlimitedSpend: false,
-                authority: address(0)
-            })
-        );
+        _createVariableMandate(mandateId, startAt, endAt);
+        _approveMandate(mandateId);
 
-        // Approve tokens
-        vm.prank(payer);
-        usdc.approve(address(mandate), TOTAL_LIMIT);
-
-        // Approve mandate
-        vm.prank(payer);
-        mandate.approveMandate(mandateId);
-
-        // After end date (must be next day due to day-level granularity)
-        vm.warp(endTime + 1 days);
+        vm.warp(endAt + 1 days);
         vm.prank(executor);
         vm.expectRevert(Mandate.Mandate_MandateExpired.selector);
-        mandate.executeMandate(mandateId, 50e6);
+        mandate.executeMandate(mandateId, 50e6, 1);
     }
 
     // ============ Limit Edge Cases ============
 
     function testExecutePaymentHittingExactTotalLimit() public {
         bytes32 mandateId = generateMandateId();
-        vm.prank(executor);
-        mandate.createMandate(
-            payer,
-            mandateId,
-            Mandate.CreateMandateParams({
-                payee: payee,
-                token: address(usdc),
-                totalLimit: TOTAL_LIMIT,
-                amountPerDebit: AMOUNT_PER_DEBIT,
-                frequency: FREQUENCY,
-                startTime: block.timestamp,
-                endTime: block.timestamp + 365 days,
-                debitType: Mandate.DebitType.Variable,
-                frequencyType: Mandate.Frequency.Monthly,
-                isUnlimitedSpend: false,
-                authority: address(0)
-            })
-        );
+        _createVariableMandate(mandateId, block.timestamp, block.timestamp + 365 days);
+        _approveMandate(mandateId);
 
-        // Approve tokens
-        vm.prank(payer);
-        usdc.approve(address(mandate), TOTAL_LIMIT);
-
-        // Approve mandate
-        vm.prank(payer);
-        mandate.approveMandate(mandateId);
-
-        // Execute payments up to exact limit
         uint256 remaining = TOTAL_LIMIT;
+        uint64 nonce = 1;
         while (remaining > 0) {
-            uint256 amount = remaining >= AMOUNT_PER_DEBIT ? AMOUNT_PER_DEBIT : remaining;
+            uint256 amount = remaining >= PER_EXECUTION_LIMIT ? PER_EXECUTION_LIMIT : remaining;
             vm.prank(executor);
-            mandate.executeMandate(mandateId, amount);
+            mandate.executeMandate(mandateId, amount, nonce++);
             remaining -= amount;
 
             if (remaining > 0) {
-                vm.warp(block.timestamp + FREQUENCY);
+                vm.warp(block.timestamp + MIN_INTERVAL);
             }
         }
 
         Mandate.MandateData memory m = mandate.getMandate(mandateId);
-        assertEq(m.totalPaid, TOTAL_LIMIT);
+        assertEq(m.totalExecuted, TOTAL_LIMIT);
+        assertEq(uint256(m.status), uint256(Mandate.MandateStatus.COMPLETE));
 
-        // Try one more payment
-        vm.warp(block.timestamp + FREQUENCY);
+        vm.warp(block.timestamp + MIN_INTERVAL);
         vm.prank(executor);
-        vm.expectRevert(Mandate.Mandate_ExecutionExceedsLimit.selector);
-        mandate.executeMandate(mandateId, 1);
-    }
-
-    function testExecutePaymentWithRemainingLessThanPerPaymentLimit() public {
-        bytes32 mandateId = generateMandateId();
-        vm.prank(executor);
-        mandate.createMandate(
-            payer,
-            mandateId,
-            Mandate.CreateMandateParams({
-                payee: payee,
-                token: address(usdc),
-                totalLimit: TOTAL_LIMIT,
-                amountPerDebit: AMOUNT_PER_DEBIT,
-                frequency: FREQUENCY,
-                startTime: block.timestamp,
-                endTime: block.timestamp + 365 days,
-                debitType: Mandate.DebitType.Variable,
-                frequencyType: Mandate.Frequency.Monthly,
-                isUnlimitedSpend: false,
-                authority: address(0)
-            })
-        );
-
-        // Approve tokens
-        vm.prank(payer);
-        usdc.approve(address(mandate), TOTAL_LIMIT);
-
-        // Approve mandate
-        vm.prank(payer);
-        mandate.approveMandate(mandateId);
-
-        // Execute 9 full payments (900e6)
-        for (uint256 i = 0; i < 9; i++) {
-            if (i > 0) {
-                vm.warp(block.timestamp + FREQUENCY);
-            }
-            vm.prank(executor);
-            mandate.executeMandate(mandateId, AMOUNT_PER_DEBIT);
-        }
-
-        // Remaining: 100e6, can execute one more full payment
-        vm.warp(block.timestamp + FREQUENCY);
-        vm.prank(executor);
-        mandate.executeMandate(mandateId, AMOUNT_PER_DEBIT);
-
-        Mandate.MandateData memory m = mandate.getMandate(mandateId);
-        assertEq(m.totalPaid, TOTAL_LIMIT);
+        vm.expectRevert(Mandate.Mandate_MandateNotActive.selector);
+        mandate.executeMandate(mandateId, 1, nonce);
     }
 
     function testInsufficientBalanceRevert() public {
-        address poorPayer = makeAddr("poorPayer");
-        usdc.mint(poorPayer, 10e6); // Only 10 USDC
+        address poorSender = makeAddr("poorSender");
+        usdc.mint(poorSender, 10e6);
+
+        address[] memory empty;
+        bytes32 policyHash = computePolicyHash(
+            Mandate.ChargeType.VARIABLE, Mandate.Frequency.MONTHLY, MIN_INTERVAL,
+            PER_EXECUTION_LIMIT, TOTAL_LIMIT, block.timestamp, block.timestamp + 365 days
+        );
 
         bytes32 mandateId = generateMandateId();
         vm.prank(executor);
         mandate.createMandate(
-            poorPayer,
-            mandateId,
-            Mandate.CreateMandateParams({
-                payee: payee,
-                token: address(usdc),
-                totalLimit: TOTAL_LIMIT,
-                amountPerDebit: AMOUNT_PER_DEBIT,
-                frequency: FREQUENCY,
-                startTime: block.timestamp,
-                endTime: block.timestamp + 365 days,
-                debitType: Mandate.DebitType.Variable,
-                frequencyType: Mandate.Frequency.Monthly,
-                isUnlimitedSpend: false,
-                authority: address(0)
-            })
+            poorSender, mandateId, recipient, address(usdc),
+            TOTAL_LIMIT, PER_EXECUTION_LIMIT,
+            Mandate.ChargeType.VARIABLE, Mandate.Frequency.MONTHLY, MIN_INTERVAL,
+            block.timestamp, block.timestamp + 365 days, empty, empty, policyHash
         );
 
-        // Approve tokens
-        vm.prank(poorPayer);
+        vm.prank(poorSender);
         usdc.approve(address(mandate), TOTAL_LIMIT);
 
-        // Approve mandate
-        vm.prank(poorPayer);
+        vm.prank(poorSender);
         mandate.approveMandate(mandateId);
 
-        // Try to execute payment larger than balance
         vm.prank(executor);
         vm.expectRevert(Mandate.Mandate_InsufficientBalance.selector);
-        mandate.executeMandate(mandateId, 50e6);
+        mandate.executeMandate(mandateId, 50e6, 1);
     }
 
     function testInsufficientAllowanceRevert() public {
         bytes32 mandateId = generateMandateId();
-        vm.prank(executor);
-        mandate.createMandate(
-            payer,
-            mandateId,
-            Mandate.CreateMandateParams({
-                payee: payee,
-                token: address(usdc),
-                totalLimit: TOTAL_LIMIT,
-                amountPerDebit: AMOUNT_PER_DEBIT,
-                frequency: FREQUENCY,
-                startTime: block.timestamp,
-                endTime: block.timestamp + 365 days,
-                debitType: Mandate.DebitType.Variable,
-                frequencyType: Mandate.Frequency.Monthly,
-                isUnlimitedSpend: false,
-                authority: address(0)
-            })
-        );
+        _createVariableMandate(mandateId, block.timestamp, block.timestamp + 365 days);
+        _approveMandate(mandateId);
 
-        // Approve tokens for mandate approval
-        vm.prank(payer);
-        usdc.approve(address(mandate), TOTAL_LIMIT);
-
-        // Approve mandate
-        vm.prank(payer);
-        mandate.approveMandate(mandateId);
-
-        // Then set insufficient allowance
-        vm.prank(payer);
+        vm.prank(sender);
         usdc.approve(address(mandate), 10e6);
 
         vm.prank(executor);
         vm.expectRevert(Mandate.Mandate_InsufficientAllowance.selector);
-        mandate.executeMandate(mandateId, 50e6);
+        mandate.executeMandate(mandateId, 50e6, 1);
     }
-
-    // ============ Approval Health Edge Cases ============
 
     // ============ View Function Edge Cases ============
 
     function testCanExecutePaymentWithInvalidMandateId() public view {
-        (bool canExecute, string memory reason) = mandate.canExecuteMandate(bytes32(uint256(999)), 50e6);
+        (bool canExecute, string memory reason) = mandate.canExecuteMandate(bytes32(uint256(999)), 50e6, 1);
         assertFalse(canExecute);
         assertEq(reason, "Invalid mandate ID");
     }
 
     function testCanExecutePaymentOnCanceledMandate() public {
         bytes32 mandateId = generateMandateId();
-        vm.prank(executor);
-        mandate.createMandate(
-            payer,
-            mandateId,
-            Mandate.CreateMandateParams({
-                payee: payee,
-                token: address(usdc),
-                totalLimit: TOTAL_LIMIT,
-                amountPerDebit: AMOUNT_PER_DEBIT,
-                frequency: FREQUENCY,
-                startTime: block.timestamp,
-                endTime: block.timestamp + 365 days,
-                debitType: Mandate.DebitType.Variable,
-                frequencyType: Mandate.Frequency.Monthly,
-                isUnlimitedSpend: false,
-                authority: address(0)
-            })
-        );
+        _createVariableMandate(mandateId, block.timestamp, block.timestamp + 365 days);
+        _approveMandate(mandateId);
 
-        // Approve tokens
-        vm.prank(payer);
-        usdc.approve(address(mandate), TOTAL_LIMIT);
-
-        // Approve mandate
-        vm.prank(payer);
-        mandate.approveMandate(mandateId);
-
-        vm.prank(payer);
+        vm.prank(sender);
         mandate.cancelMandate(mandateId);
 
-        (bool canExecute, string memory reason) = mandate.canExecuteMandate(mandateId, 50e6);
+        (bool canExecute, string memory reason) = mandate.canExecuteMandate(mandateId, 50e6, 1);
         assertFalse(canExecute);
         assertEq(reason, "Mandate not active");
     }
 
     function testCanExecutePaymentOnExpiredMandate() public {
-        uint256 startTime = block.timestamp;
-        uint256 endTime = startTime + 1 days;
+        uint256 startAt = block.timestamp;
+        uint256 endAt = startAt + 1 days;
 
         bytes32 mandateId = generateMandateId();
-        vm.prank(executor);
-        mandate.createMandate(
-            payer,
-            mandateId,
-            Mandate.CreateMandateParams({
-                payee: payee,
-                token: address(usdc),
-                totalLimit: TOTAL_LIMIT,
-                amountPerDebit: AMOUNT_PER_DEBIT,
-                frequency: FREQUENCY,
-                startTime: startTime,
-                endTime: endTime,
-                debitType: Mandate.DebitType.Variable,
-                frequencyType: Mandate.Frequency.Monthly,
-                isUnlimitedSpend: false,
-                authority: address(0)
-            })
-        );
+        _createVariableMandate(mandateId, startAt, endAt);
+        _approveMandate(mandateId);
 
-        // Approve tokens
-        vm.prank(payer);
-        usdc.approve(address(mandate), TOTAL_LIMIT);
+        vm.warp(endAt + 1);
 
-        // Approve mandate
-        vm.prank(payer);
-        mandate.approveMandate(mandateId);
-
-        vm.warp(endTime + 1);
-
-        (bool canExecute, string memory reason) = mandate.canExecuteMandate(mandateId, 50e6);
+        (bool canExecute, string memory reason) = mandate.canExecuteMandate(mandateId, 50e6, 1);
         assertFalse(canExecute);
         assertEq(reason, "Mandate expired");
     }
 
     function testCanExecutePaymentForFixedDebit() public {
         bytes32 mandateId = generateMandateId();
-        vm.prank(executor);
-        mandate.createMandate(
-            payer,
-            mandateId,
-            Mandate.CreateMandateParams({
-                payee: payee,
-                token: address(usdc),
-                totalLimit: TOTAL_LIMIT,
-                amountPerDebit: AMOUNT_PER_DEBIT,
-                frequency: FREQUENCY,
-                startTime: block.timestamp,
-                endTime: block.timestamp + 365 days,
-                debitType: Mandate.DebitType.Fixed,
-                frequencyType: Mandate.Frequency.Monthly,
-                isUnlimitedSpend: false,
-                authority: address(0)
-            })
-        );
+        _createFixedMandate(mandateId, block.timestamp, block.timestamp + 365 days);
+        _approveMandate(mandateId);
 
-        // Approve tokens
-        vm.prank(payer);
-        usdc.approve(address(mandate), TOTAL_LIMIT);
-
-        // Approve mandate
-        vm.prank(payer);
-        mandate.approveMandate(mandateId);
-
-        // Wrong amount
-        (bool canExecute, string memory reason) = mandate.canExecuteMandate(mandateId, 50e6);
+        (bool canExecute, string memory reason) = mandate.canExecuteMandate(mandateId, 50e6, 1);
         assertFalse(canExecute);
         assertEq(reason, "Fixed debit requires exact amount");
 
-        // Correct amount
-        (canExecute, reason) = mandate.canExecuteMandate(mandateId, AMOUNT_PER_DEBIT);
+        (canExecute, reason) = mandate.canExecuteMandate(mandateId, PER_EXECUTION_LIMIT, 1);
         assertTrue(canExecute);
         assertEq(reason, "");
     }
 
     function testCanExecutePaymentForVariableDebit() public {
         bytes32 mandateId = generateMandateId();
-        vm.prank(executor);
-        mandate.createMandate(
-            payer,
-            mandateId,
-            Mandate.CreateMandateParams({
-                payee: payee,
-                token: address(usdc),
-                totalLimit: TOTAL_LIMIT,
-                amountPerDebit: AMOUNT_PER_DEBIT,
-                frequency: FREQUENCY,
-                startTime: block.timestamp,
-                endTime: block.timestamp + 365 days,
-                debitType: Mandate.DebitType.Variable,
-                frequencyType: Mandate.Frequency.Monthly,
-                isUnlimitedSpend: false,
-                authority: address(0)
-            })
-        );
+        _createVariableMandate(mandateId, block.timestamp, block.timestamp + 365 days);
+        _approveMandate(mandateId);
 
-        // Approve tokens
-        vm.prank(payer);
-        usdc.approve(address(mandate), TOTAL_LIMIT);
-
-        // Approve mandate
-        vm.prank(payer);
-        mandate.approveMandate(mandateId);
-
-        // Zero amount
-        (bool canExecute, string memory reason) = mandate.canExecuteMandate(mandateId, 0);
+        (bool canExecute, string memory reason) = mandate.canExecuteMandate(mandateId, 0, 1);
         assertFalse(canExecute);
         assertEq(reason, "Variable debit amount invalid");
 
-        // Exceeding limit
-        (canExecute, reason) = mandate.canExecuteMandate(mandateId, AMOUNT_PER_DEBIT + 1);
+        (canExecute, reason) = mandate.canExecuteMandate(mandateId, PER_EXECUTION_LIMIT + 1, 1);
         assertFalse(canExecute);
         assertEq(reason, "Variable debit amount invalid");
 
-        // Valid amount
-        (canExecute, reason) = mandate.canExecuteMandate(mandateId, 50e6);
+        (canExecute, reason) = mandate.canExecuteMandate(mandateId, 50e6, 1);
         assertTrue(canExecute);
         assertEq(reason, "");
     }
-
-    // ============ User Mandate Tracking ============
 
     // ============ Multiple Executors Test ============
 
@@ -537,111 +312,152 @@ contract MandateEdgeCasesTest is Test {
         mandate.addExecutor(executor2);
 
         bytes32 mandateId = generateMandateId();
+        _createVariableMandate(mandateId, block.timestamp, block.timestamp + 365 days);
+        _approveMandate(mandateId);
+
         vm.prank(executor);
-        mandate.createMandate(
-            payer,
-            mandateId,
-            Mandate.CreateMandateParams({
-                payee: payee,
-                token: address(usdc),
-                totalLimit: TOTAL_LIMIT,
-                amountPerDebit: AMOUNT_PER_DEBIT,
-                frequency: FREQUENCY,
-                startTime: block.timestamp,
-                endTime: block.timestamp + 365 days,
-                debitType: Mandate.DebitType.Variable,
-                frequencyType: Mandate.Frequency.Monthly,
-                isUnlimitedSpend: false,
-                authority: address(0)
-            })
-        );
+        mandate.executeMandate(mandateId, 50e6, 1);
 
-        // Approve tokens
-        vm.prank(payer);
-        usdc.approve(address(mandate), TOTAL_LIMIT);
-
-        // Approve mandate
-        vm.prank(payer);
-        mandate.approveMandate(mandateId);
-
-        // First executor
-        vm.prank(executor);
-        mandate.executeMandate(mandateId, 50e6);
-
-        // Second executor
-        vm.warp(block.timestamp + FREQUENCY);
+        vm.warp(block.timestamp + MIN_INTERVAL);
         vm.prank(executor2);
-        mandate.executeMandate(mandateId, 50e6);
+        mandate.executeMandate(mandateId, 50e6, 2);
 
         Mandate.MandateData memory m = mandate.getMandate(mandateId);
-        assertEq(m.totalPaid, 100e6);
+        assertEq(m.totalExecuted, 100e6);
     }
 
     // ============ Integer Boundary Tests ============
 
-    function testCreateMandateWithMaxUint256Frequency() public {
-        bytes32 mandateId = generateMandateId();
-        vm.prank(executor);
-        mandate.createMandate(
-            payer,
-            mandateId,
-            Mandate.CreateMandateParams({
-                payee: payee,
-                token: address(usdc),
-                totalLimit: TOTAL_LIMIT,
-                amountPerDebit: AMOUNT_PER_DEBIT,
-                frequency: type(uint256).max,
-                startTime: block.timestamp,
-                endTime: block.timestamp + 365 days,
-                debitType: Mandate.DebitType.Variable,
-                frequencyType: Mandate.Frequency.Monthly,
-                isUnlimitedSpend: false,
-                authority: address(0)
-            })
-        );
-
-        Mandate.MandateData memory m = mandate.getMandate(mandateId);
-        assertEq(m.frequency, type(uint256).max);
-    }
-
     function testUnlimitedSpendWithLargePayments() public {
-        uint256 largeAmount = 1000000e6; // 1 million USDC
+        uint256 largeAmount = 1000000e6;
 
-        usdc.mint(payer, largeAmount * 10);
+        usdc.mint(sender, largeAmount * 10);
+
+        address[] memory empty;
+        bytes32 policyHash = computePolicyHash(
+            Mandate.ChargeType.VARIABLE, Mandate.Frequency.MONTHLY, MIN_INTERVAL,
+            largeAmount, 0, block.timestamp, block.timestamp + 365 days
+        );
 
         bytes32 mandateId = generateMandateId();
         vm.prank(executor);
         mandate.createMandate(
-            payer,
-            mandateId,
-            Mandate.CreateMandateParams({
-                payee: payee,
-                token: address(usdc),
-                totalLimit: 0,
-                amountPerDebit: largeAmount,
-                frequency: FREQUENCY,
-                startTime: block.timestamp,
-                endTime: block.timestamp + 365 days,
-                debitType: Mandate.DebitType.Variable,
-                frequencyType: Mandate.Frequency.Monthly,
-                isUnlimitedSpend: true,
-                authority: address(0)
-            })
+            sender, mandateId, recipient, address(usdc),
+            0, largeAmount,
+            Mandate.ChargeType.VARIABLE, Mandate.Frequency.MONTHLY, MIN_INTERVAL,
+            block.timestamp, block.timestamp + 365 days, empty, empty, policyHash
         );
 
-        // Approve tokens
-        vm.prank(payer);
+        vm.prank(sender);
         usdc.approve(address(mandate), type(uint256).max);
 
-        // Approve mandate
-        vm.prank(payer);
+        vm.prank(sender);
         mandate.approveMandate(mandateId);
 
-        // Execute large payment
         vm.prank(executor);
-        mandate.executeMandate(mandateId, largeAmount);
+        mandate.executeMandate(mandateId, largeAmount, 1);
 
         Mandate.MandateData memory m = mandate.getMandate(mandateId);
-        assertEq(m.totalPaid, largeAmount);
+        assertEq(m.totalExecuted, largeAmount);
+    }
+
+    // ============ Various Charge Types ============
+
+    function testVariableMandateMultipleExecutions() public {
+        address[] memory empty;
+        bytes32 policyHash = computePolicyHash(
+            Mandate.ChargeType.VARIABLE, Mandate.Frequency.DAILY, 1,
+            PER_EXECUTION_LIMIT, TOTAL_LIMIT, block.timestamp, block.timestamp + 365 days
+        );
+
+        bytes32 mandateId = generateMandateId();
+        vm.prank(executor);
+        mandate.createMandate(
+            sender, mandateId, recipient, address(usdc),
+            TOTAL_LIMIT, PER_EXECUTION_LIMIT,
+            Mandate.ChargeType.VARIABLE, Mandate.Frequency.DAILY, 1,
+            block.timestamp, block.timestamp + 365 days, empty, empty, policyHash
+        );
+        _approveMandate(mandateId);
+
+        vm.prank(executor);
+        mandate.executeMandate(mandateId, 30e6, 1);
+
+        vm.warp(3);
+        vm.prank(executor);
+        mandate.executeMandate(mandateId, 20e6, 2);
+
+        vm.warp(5);
+        vm.prank(executor);
+        mandate.executeMandate(mandateId, 50e6, 3);
+
+        Mandate.MandateData memory m = mandate.getMandate(mandateId);
+        assertEq(m.totalExecuted, 100e6);
+    }
+
+    // ============ Sender Cancellation ============
+
+    function testSenderCanCancelMandate() public {
+        bytes32 mandateId = generateMandateId();
+        _createVariableMandate(mandateId, block.timestamp, block.timestamp + 365 days);
+        _approveMandate(mandateId);
+
+        vm.prank(sender);
+        mandate.cancelMandate(mandateId);
+
+        Mandate.MandateData memory m = mandate.getMandate(mandateId);
+        assertEq(uint256(m.status), uint256(Mandate.MandateStatus.CANCELLED));
+    }
+
+    // ============ Execution Pause ============
+
+    function testExecutionPauseAllowsCancellation() public {
+        bytes32 mandateId = generateMandateId();
+        _createVariableMandate(mandateId, block.timestamp, block.timestamp + 365 days);
+        _approveMandate(mandateId);
+
+        vm.prank(admin);
+        mandate.pauseExecution();
+
+        vm.prank(sender);
+        mandate.cancelMandate(mandateId);
+
+        Mandate.MandateData memory m = mandate.getMandate(mandateId);
+        assertEq(uint256(m.status), uint256(Mandate.MandateStatus.CANCELLED));
+    }
+
+    // ============ Policy Hash ============
+
+    function testPolicyHashStoredAndVerifiable() public {
+        uint256 startAt = block.timestamp;
+        uint256 endAt = startAt + 365 days;
+
+        bytes32 expectedHash = computePolicyHash(
+            Mandate.ChargeType.VARIABLE, Mandate.Frequency.MONTHLY, MIN_INTERVAL,
+            PER_EXECUTION_LIMIT, TOTAL_LIMIT, startAt, endAt
+        );
+
+        bytes32 mandateId = generateMandateId();
+        _createVariableMandate(mandateId, startAt, endAt);
+
+        Mandate.MandateData memory m = mandate.getMandate(mandateId);
+        assertEq(m.policyHash, expectedHash);
+
+        Mandate.Policy memory p = mandate.getPolicy(mandateId);
+        assertEq(p.policyHash, expectedHash);
+    }
+
+    // ============ Total Charged Tracking ============
+
+    function testTotalChargedIncreasesWithExecutions() public {
+        bytes32 mandateId = generateMandateId();
+        _createVariableMandate(mandateId, block.timestamp, block.timestamp + 365 days);
+        _approveMandate(mandateId);
+
+        vm.prank(executor);
+        mandate.executeMandate(mandateId, 30e6, 1);
+
+        Mandate.MandateData memory m = mandate.getMandate(mandateId);
+        assertEq(m.totalExecuted, 30e6);
     }
 }
