@@ -6,107 +6,142 @@ import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
+import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 
 /**
  * @title Mandate
- * @dev Recurring stablecoin payment contract with user-controlled mandates
- * @notice Allows users to set up automatic recurring payments with full control
+ * @dev Recurring stablecoin payment execution with programmable policies
+ * @notice
+ *   Mandate = granted authority (sender -> recipient -> token)
+ *   Policy = execution constraints (how authority may be used)
+ *   ExecutionState = mutable runtime bookkeeping (what happened so far)
  */
 contract Mandate is AccessControl, Pausable, Initializable {
     using SafeERC20 for IERC20;
 
     // Roles
     bytes32 public constant EXECUTOR_ROLE = keccak256("EXECUTOR_ROLE");
+    bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
 
     // Constants
     uint256 public constant UNLIMITED_ALLOWANCE = type(uint256).max;
 
     // Enums
-    enum DebitType {
-        Fixed, // Must debit exact amountPerDebit
-        Variable // Can debit any amount up to amountPerDebit
-
+    enum ChargeType {
+        FIXED,
+        VARIABLE
     }
 
     enum Frequency {
-        Daily, // Payment occurs daily
-        Weekly, // Payment occurs weekly
-        Monthly, // Payment occurs monthly
-        Annually // Payment occurs annually
-
+        DAILY,
+        WEEKLY,
+        MONTHLY,
+        ANNUALLY
     }
 
-    // Structs
-    struct CreateMandateParams {
-        address payee;
-        address token;
-        uint256 totalLimit;
-        uint256 amountPerDebit;
-        uint256 frequency;
-        uint256 startTime;
-        uint256 endTime;
-        DebitType debitType;
-        Frequency frequencyType;
-        bool isUnlimitedSpend;
-        address authority;
+    enum MandateStatus {
+        PENDING,
+        ACTIVE,
+        PAUSED,
+        EXPIRED,
+        CANCELLED,
+        COMPLETE
     }
 
+    // Policy = execution constraints only
+    struct Policy {
+        Frequency frequency;
+        uint256 minIntervalSeconds;
+        uint256 perExecutionLimit;
+        uint256 periodLimit;
+        uint256 periodWindow;
+        bytes32 policyHash;
+    }
+
+    // ExecutionState = runtime bookkeeping only
+    struct ExecutionState {
+        uint256 totalExecuted;
+        uint256 periodExecuted;
+        uint256 lastExecutionTime;
+        uint256 lastPeriodTimestamp;
+        uint64 executionNonce;
+    }
+
+    // Mandate = granted authority
     struct MandateData {
-        address payer;
-        address payee;
-        address token;
-        uint256 totalLimit;
-        uint256 amountPerDebit;
-        uint256 frequency;
-        uint256 startTime;
-        uint256 endTime;
-        uint256 totalPaid;
-        uint256 lastPaymentTime;
-        bool isActive;
-        bool isApproved;
-        uint256 createdAt;
-        DebitType debitType;
-        Frequency frequencyType;
-        bool isUnlimitedSpend;
         address authority;
+        address sender;
+        address recipient;
+        address token;
+        uint256 authorizedLimit;
+        ChargeType chargeType;
+        uint256 startAt;
+        uint256 endAt;
+        Policy policy;
+        ExecutionState executionState;
+        MandateStatus status;
+        uint256 createdAt;
+        bool isApproved;
+        uint64 modifySignatureNonce;
     }
 
+    // Mapping from mandate ID to mandate data
     mapping(bytes32 => MandateData) public mandates;
+
+    // Signature nonce tracking for modifyMandate replay protection
+    mapping(address => mapping(uint256 => bool)) public usedSignatureNonces;
+
+    // Token allowlist
     mapping(address => bool) public supportedTokens;
+
+    // Execution pause flag
+    bool public executionPaused;
 
     // Events
     event MandateCreated(
         bytes32 indexed mandateId,
-        address indexed payer,
-        address indexed payee,
+        address indexed authority,
+        address indexed sender,
+        address recipient,
         address token,
-        uint256 totalLimit,
-        uint256 amountPerDebit,
-        uint256 frequency,
-        uint256 startTime,
-        uint256 endTime,
-        DebitType debitType,
-        Frequency frequencyType
+        uint256 authorizedLimit,
+        ChargeType chargeType,
+        uint256 startAt,
+        uint256 endAt,
+        bytes32 policyHash
     );
 
     event MandateExecuted(
         bytes32 indexed mandateId,
-        address indexed payer,
-        address indexed payee,
+        address indexed sender,
+        address indexed recipient,
         address token,
         uint256 amount,
-        uint256 timestamp
+        uint256 totalExecuted,
+        uint256 timestamp,
+        uint64 nonce,
+        bytes32 policyHash
     );
 
-    event MandateCanceled(bytes32 indexed mandateId, address indexed payer, uint256 timestamp);
+    event MandateCancelled(bytes32 indexed mandateId, address indexed sender, uint256 timestamp);
 
     event MandateApproved(bytes32 indexed mandateId, address indexed user, uint256 timestamp);
+
+    event MandatePaused(bytes32 indexed mandateId, address indexed caller, uint256 timestamp);
+
+    event MandateResumed(bytes32 indexed mandateId, address indexed caller, uint256 timestamp);
 
     event MandateStateToggled(bytes32 indexed mandateId, address indexed caller, bool newState, uint256 timestamp);
 
     event ExecutorAdded(address indexed executor);
     event ExecutorRemoved(address indexed executor);
     event TokenSupported(address indexed token, bool supported);
+
+    event PolicyChanged(bytes32 indexed mandateId, bytes32 oldPolicyHash, bytes32 newPolicyHash, address indexed caller);
+
+    event ExecutionPaused(address indexed caller, uint256 timestamp);
+    event ExecutionResumed(address indexed caller, uint256 timestamp);
 
     // Custom errors
     error Mandate_InvalidMandateId();
@@ -124,366 +159,539 @@ contract Mandate is AccessControl, Pausable, Initializable {
     error Mandate_AlreadyApproved();
     error Mandate_NotApproved();
     error Mandate_MandateIdAlreadyExists();
+    error Mandate_InvalidNonce();
+    error Mandate_PolicyExceedsAuthority();
+    error Mandate_ExecutionPaused();
+    error Mandate_InvalidSignature();
+    error Mandate_SignatureNonceUsed();
 
     constructor() {
         _disableInitializers();
     }
 
-    function initialize(address _admin, address[] memory _supportedTokens) external initializer {
+    /**
+     * @dev Initialize the contract
+     * @param _admin Admin address for DEFAULT_ADMIN_ROLE
+     * @param _supportedTokens Initial list of supported token addresses
+     * @param _executor Initial executor address
+     */
+    function initialize(address _admin, address[] memory _supportedTokens, address _executor)
+        external
+        initializer
+    {
         _grantRole(DEFAULT_ADMIN_ROLE, _admin);
+        _grantRole(PAUSER_ROLE, _admin);
 
-        // Add supported tokens
         for (uint256 i = 0; i < _supportedTokens.length; i++) {
             supportedTokens[_supportedTokens[i]] = true;
             emit TokenSupported(_supportedTokens[i], true);
         }
+
+        if (_executor != address(0)) {
+            _grantRole(EXECUTOR_ROLE, _executor);
+        }
     }
 
+    // ========== EXTERNAL FUNCTIONS ==========
+
     /**
-     * @dev Creates a new payment mandate for a user
-     * @param _user The user address who will be the payer
-     * @param _mandateId The unique ID for the mandate (generated off-chain)
-     * @param params Struct containing all mandate parameters
-     * @notice Only executors can create mandates (business/platform creates on behalf of user)
-     * @notice User must approve the mandate after creation via approveMandate()
+     * @dev Creates a new mandate on-chain
+     * @param _sender The sender wallet address authorizing funds
+     * @param _mandateId Unique mandate identifier (generated off-chain)
+     * @param _recipient Recipient wallet address
+     * @param _token Token address (stablecoin)
+     * @param _authorizedLimit Maximum authority granted by sender (0 = unlimited)
+     * @param _chargeType FIXED or VARIABLE
+     * @param _startAt Unix timestamp for start
+     * @param _endAt Unix timestamp for end
+     * @param _frequency Frequency enum
+     * @param _minIntervalSeconds Minimum seconds between executions
+     * @param _perExecutionLimit Maximum per execution
+     * @param _periodLimit Optional period limit (0 = disabled)
+     * @param _periodWindow Optional period window in seconds (0 = disabled)
+     * @param _policyHash Canonical policy hash for verification
      */
-    function createMandate(address _user, bytes32 _mandateId, CreateMandateParams calldata params)
-        external
-        onlyRole(EXECUTOR_ROLE)
-        whenNotPaused
-        returns (bytes32)
-    {
-        if (_user == address(0) || params.payee == address(0) || params.payee == _user) {
+    function createMandate(
+        address _sender,
+        bytes32 _mandateId,
+        address _recipient,
+        address _token,
+        uint256 _authorizedLimit,
+        ChargeType _chargeType,
+        uint256 _startAt,
+        uint256 _endAt,
+        Frequency _frequency,
+        uint256 _minIntervalSeconds,
+        uint256 _perExecutionLimit,
+        uint256 _periodLimit,
+        uint256 _periodWindow,
+        bytes32 _policyHash
+    ) external onlyRole(EXECUTOR_ROLE) whenNotPaused returns (bytes32) {
+        if (_sender == address(0) || _recipient == address(0) || _token == address(0)) {
             revert Mandate_InvalidParameters();
         }
         if (_mandateId == bytes32(0)) revert Mandate_InvalidParameters();
-        if (params.authority == _user) revert Mandate_InvalidParameters(); // Authority cannot be the payer
-        if (!supportedTokens[params.token]) revert Mandate_UnsupportedToken();
-        if (params.amountPerDebit == 0) revert Mandate_InvalidParameters();
-        if (!params.isUnlimitedSpend && params.totalLimit == 0) {
-            revert Mandate_InvalidParameters();
+        if (_perExecutionLimit == 0) revert Mandate_InvalidParameters();
+        if (!supportedTokens[_token]) revert Mandate_UnsupportedToken();
+        if (_startAt > block.timestamp + 15) revert Mandate_InvalidParameters();
+        if (_endAt <= _startAt) revert Mandate_InvalidParameters();
+        if (_minIntervalSeconds == 0) revert Mandate_InvalidParameters();
+
+        // Policy constraints may tighten authority but never broaden it
+        if (_authorizedLimit != 0 && _perExecutionLimit > _authorizedLimit) {
+            revert Mandate_PolicyExceedsAuthority();
         }
-        if (!params.isUnlimitedSpend && params.amountPerDebit > params.totalLimit) {
-            revert Mandate_InvalidParameters();
-        }
-        if (params.frequency == 0) revert Mandate_InvalidParameters();
-        // Allow startTime to be now or future (grace period for transaction mining on Base: ~2s block time)
-        // Reject if startTime is more than 15 seconds in the past (prevents backdating)
-        if (params.startTime + 15 < block.timestamp) revert Mandate_InvalidParameters();
-        if (params.endTime <= params.startTime) revert Mandate_InvalidParameters();
 
-        if (mandates[_mandateId].payer != address(0)) revert Mandate_MandateIdAlreadyExists();
+        if (mandates[_mandateId].sender != address(0)) revert Mandate_MandateIdAlreadyExists();
 
-        _createMandateData(_user, _mandateId, params);
+        uint256 effectiveLimit = _authorizedLimit == 0 ? UNLIMITED_ALLOWANCE : _authorizedLimit;
 
-        uint256 effectiveTotalLimit = params.isUnlimitedSpend ? UNLIMITED_ALLOWANCE : params.totalLimit;
+        mandates[_mandateId] = MandateData({
+            authority: msg.sender,
+            sender: _sender,
+            recipient: _recipient,
+            token: _token,
+            authorizedLimit: effectiveLimit,
+            chargeType: _chargeType,
+            startAt: _startAt,
+            endAt: _endAt,
+            policy: Policy({
+                frequency: _frequency,
+                minIntervalSeconds: _minIntervalSeconds,
+                perExecutionLimit: _perExecutionLimit,
+                periodLimit: _periodLimit,
+                periodWindow: _periodWindow,
+                policyHash: _policyHash
+            }),
+            executionState: ExecutionState({
+                totalExecuted: 0,
+                periodExecuted: 0,
+                lastExecutionTime: 0,
+                lastPeriodTimestamp: 0,
+                executionNonce: 0
+            }),
+            status: MandateStatus.PENDING,
+            createdAt: block.timestamp,
+            isApproved: false,
+            modifySignatureNonce: 0
+        });
 
         emit MandateCreated(
             _mandateId,
-            _user,
-            params.payee,
-            params.token,
-            effectiveTotalLimit,
-            params.amountPerDebit,
-            params.frequency,
-            params.startTime,
-            params.endTime,
-            params.debitType,
-            params.frequencyType
+            msg.sender,
+            _sender,
+            _recipient,
+            _token,
+            _authorizedLimit,
+            _chargeType,
+            _startAt,
+            _endAt,
+            _policyHash
         );
 
         return _mandateId;
     }
 
-    function _createMandateData(address _payer, bytes32 _mandateId, CreateMandateParams calldata params) internal {
-        uint256 effectiveTotalLimit = params.isUnlimitedSpend ? UNLIMITED_ALLOWANCE : params.totalLimit;
-
-        mandates[_mandateId] = MandateData({
-            payer: _payer,
-            payee: params.payee,
-            token: params.token,
-            totalLimit: effectiveTotalLimit,
-            amountPerDebit: params.amountPerDebit,
-            frequency: params.frequency,
-            startTime: params.startTime,
-            endTime: params.endTime,
-            totalPaid: 0,
-            lastPaymentTime: 0,
-            isActive: false,
-            isApproved: false,
-            createdAt: block.timestamp,
-            debitType: params.debitType,
-            frequencyType: params.frequencyType,
-            isUnlimitedSpend: params.isUnlimitedSpend,
-            authority: params.authority
-        });
-    }
-
     /**
      * @dev Approves and activates a mandate
      * @param _mandateId The mandate ID to approve
-     * @notice Can be called by anyone (user, backend, or relayer) to activate the mandate
-     *         Requires that the payer has already approved sufficient token allowance
      */
     function approveMandate(bytes32 _mandateId) external whenNotPaused {
         MandateData storage mandate = mandates[_mandateId];
 
-        if (mandate.payer == address(0)) revert Mandate_InvalidMandateId();
+        if (mandate.sender == address(0)) revert Mandate_InvalidMandateId();
         if (mandate.isApproved) revert Mandate_AlreadyApproved();
-        if (mandate.isActive) revert Mandate_MandateNotActive();
+        if (mandate.status != MandateStatus.PENDING) revert Mandate_InvalidParameters();
 
-        // Verify payer has approved sufficient tokens before activating mandate
         IERC20 token = IERC20(mandate.token);
-        uint256 currentAllowance = token.allowance(mandate.payer, address(this));
-        if (currentAllowance < mandate.totalLimit) {
+        uint256 currentAllowance = token.allowance(mandate.sender, address(this));
+        if (mandate.authorizedLimit != UNLIMITED_ALLOWANCE && currentAllowance < mandate.authorizedLimit) {
             revert Mandate_InsufficientAllowance();
         }
 
         mandate.isApproved = true;
-        mandate.isActive = true;
+        mandate.status = MandateStatus.ACTIVE;
 
-        emit MandateApproved(_mandateId, mandate.payer, block.timestamp);
+        emit MandateApproved(_mandateId, mandate.sender, block.timestamp);
     }
 
     /**
-     * @dev Executes a mandate debit according to mandate rules
+     * @dev Executes a mandate debit
      * @param _mandateId The mandate ID to execute
-     * @param _amount Amount to debit (must be <= amountPerDebit for Variable, exact amountPerDebit for Fixed)
+     * @param _amount Amount to debit
+     * @param _nonce Unique nonce for this execution (replay protection)
      */
-    function executeMandate(bytes32 _mandateId, uint256 _amount) external onlyRole(EXECUTOR_ROLE) whenNotPaused {
-        _validateExecution(_mandateId, _amount);
-        _processExecution(_mandateId, _amount);
+    function executeMandate(bytes32 _mandateId, uint256 _amount, uint64 _nonce)
+        external
+        onlyRole(EXECUTOR_ROLE)
+        whenNotPaused
+    {
+        if (executionPaused) revert Mandate_ExecutionPaused();
+
+        _validateExecution(_mandateId, _amount, _nonce);
+        _processExecution(_mandateId, _amount, _nonce);
     }
 
-    function _validateExecution(bytes32 _mandateId, uint256 _amount) internal view {
+    function _validateExecution(bytes32 _mandateId, uint256 _amount, uint64 _nonce) internal view {
         MandateData storage mandate = mandates[_mandateId];
 
-        if (mandate.payer == address(0)) revert Mandate_InvalidMandateId();
+        if (mandate.sender == address(0)) revert Mandate_InvalidMandateId();
         if (!mandate.isApproved) revert Mandate_NotApproved();
-        if (!mandate.isActive) revert Mandate_MandateNotActive();
+        if (mandate.status != MandateStatus.ACTIVE) revert Mandate_MandateNotActive();
 
-        // Use day-level granularity for start/end date checks
-        // This allows execution anytime within the start/end dates
-        uint256 currentDay = block.timestamp / 1 days;
-        uint256 startDay = mandate.startTime / 1 days;
-        uint256 endDay = mandate.endTime / 1 days;
+        if (_nonce == 0) revert Mandate_InvalidNonce();
+        if (_nonce <= mandate.executionState.executionNonce) revert Mandate_InvalidNonce();
 
-        if (currentDay > endDay) revert Mandate_MandateExpired();
-        if (currentDay < startDay) {
-            revert Mandate_ExecutionTooEarly();
+        uint256 currentTimestamp = block.timestamp;
+        if (currentTimestamp > mandate.endAt) revert Mandate_MandateExpired();
+        if (currentTimestamp < mandate.startAt) revert Mandate_ExecutionTooEarly();
+
+        if (mandate.executionState.lastExecutionTime > 0) {
+            if (currentTimestamp < mandate.executionState.lastExecutionTime + mandate.policy.minIntervalSeconds) {
+                revert Mandate_ExecutionTooEarly();
+            }
         }
 
-        // Check debit type constraints
-        if (mandate.debitType == DebitType.Fixed) {
-            // Fixed mandate: must debit exact amount and respect frequency
-            if (_amount != mandate.amountPerDebit) {
+        if (mandate.chargeType == ChargeType.FIXED) {
+            if (_amount != mandate.policy.perExecutionLimit) {
                 revert Mandate_InvalidAmountForFixedDebit();
             }
-            // Check frequency constraint for fixed mandates
-            if (mandate.lastPaymentTime > 0) {
-                if (block.timestamp < mandate.lastPaymentTime + mandate.frequency) {
-                    revert Mandate_ExecutionTooEarly();
-                }
-            }
         } else {
-            // Variable mandate: can debit any amount up to amountPerDebit, no frequency restriction
-            if (_amount == 0 || _amount > mandate.amountPerDebit) {
+            if (_amount == 0 || _amount > mandate.policy.perExecutionLimit) {
                 revert Mandate_InvalidAmountForVariableDebit();
             }
         }
 
-        // Check total limit (unless unlimited)
-        if (!mandate.isUnlimitedSpend && mandate.totalPaid + _amount > mandate.totalLimit) {
+        if (mandate.authorizedLimit != UNLIMITED_ALLOWANCE &&
+            mandate.executionState.totalExecuted + _amount > mandate.authorizedLimit) {
             revert Mandate_ExecutionExceedsLimit();
         }
 
-        IERC20 token = IERC20(mandate.token);
+        if (mandate.policy.periodLimit > 0 && mandate.policy.periodWindow > 0) {
+            uint256 currentPeriodStart = currentTimestamp - (currentTimestamp % mandate.policy.periodWindow);
+            uint256 currentPeriodExecuted = mandate.executionState.lastPeriodTimestamp < currentPeriodStart
+                ? 0
+                : mandate.executionState.periodExecuted;
+            if (currentPeriodExecuted + _amount > mandate.policy.periodLimit) {
+                revert Mandate_ExecutionExceedsLimit();
+            }
+        }
 
-        // Check allowance and balance
-        uint256 allowance = token.allowance(mandate.payer, address(this));
+        IERC20 token = IERC20(mandate.token);
+        uint256 allowance = token.allowance(mandate.sender, address(this));
         if (allowance < _amount) revert Mandate_InsufficientAllowance();
 
-        uint256 balance = token.balanceOf(mandate.payer);
+        uint256 balance = token.balanceOf(mandate.sender);
         if (balance < _amount) revert Mandate_InsufficientBalance();
     }
 
-    function _processExecution(bytes32 _mandateId, uint256 _amount) internal {
+    function _processExecution(bytes32 _mandateId, uint256 _amount, uint64 _nonce) internal {
         MandateData storage mandate = mandates[_mandateId];
         IERC20 token = IERC20(mandate.token);
 
-        // Update mandate state
-        mandate.totalPaid += _amount;
-        mandate.lastPaymentTime = block.timestamp;
+        uint256 currentTimestamp = block.timestamp;
 
-        // Execute transfer
-        token.safeTransferFrom(mandate.payer, mandate.payee, _amount);
+        // Update period execution
+        if (mandate.policy.periodLimit > 0 && mandate.policy.periodWindow > 0) {
+            uint256 currentPeriodStart = currentTimestamp - (currentTimestamp % mandate.policy.periodWindow);
+            if (mandate.executionState.lastPeriodTimestamp < currentPeriodStart) {
+                mandate.executionState.periodExecuted = 0;
+                mandate.executionState.lastPeriodTimestamp = currentPeriodStart;
+            }
+            mandate.executionState.periodExecuted += _amount;
+        }
 
-        emit MandateExecuted(_mandateId, mandate.payer, mandate.payee, mandate.token, _amount, block.timestamp);
+        // Update execution state
+        mandate.executionState.totalExecuted += _amount;
+        mandate.executionState.lastExecutionTime = currentTimestamp;
+        mandate.executionState.executionNonce = _nonce;
+
+        token.safeTransferFrom(mandate.sender, mandate.recipient, _amount);
+
+        if (mandate.authorizedLimit != UNLIMITED_ALLOWANCE &&
+            mandate.executionState.totalExecuted >= mandate.authorizedLimit) {
+            mandate.status = MandateStatus.COMPLETE;
+        }
+
+        emit MandateExecuted(
+            _mandateId,
+            mandate.sender,
+            mandate.recipient,
+            mandate.token,
+            _amount,
+            mandate.executionState.totalExecuted,
+            currentTimestamp,
+            _nonce,
+            mandate.policy.policyHash
+        );
     }
 
     /**
-     * @dev Cancels a mandate (by payer or authority)
+     * @dev Cancels a mandate
      * @param _mandateId The mandate ID to cancel
      */
     function cancelMandate(bytes32 _mandateId) external {
         MandateData storage mandate = mandates[_mandateId];
 
-        if (mandate.payer == address(0)) revert Mandate_InvalidMandateId();
-        // Allow cancellation by payer or authority (if set)
-        if (mandate.payer != msg.sender && (mandate.authority == address(0) || mandate.authority != msg.sender)) {
+        if (mandate.sender == address(0)) revert Mandate_InvalidMandateId();
+        if (mandate.status == MandateStatus.CANCELLED) return;
+        if (mandate.status == MandateStatus.COMPLETE) return;
+
+        if (msg.sender != mandate.sender &&
+            !hasRole(EXECUTOR_ROLE, msg.sender) &&
+            !hasRole(DEFAULT_ADMIN_ROLE, msg.sender)) {
             revert Mandate_UnauthorizedCaller();
         }
-        if (!mandate.isActive) revert Mandate_MandateNotActive();
 
-        mandate.isActive = false;
+        mandate.status = MandateStatus.CANCELLED;
 
-        emit MandateCanceled(_mandateId, msg.sender, block.timestamp);
+        emit MandateCancelled(_mandateId, msg.sender, block.timestamp);
+    }
+
+    /**
+     * @dev Pauses a mandate (executor only)
+     * @param _mandateId The mandate ID to pause
+     */
+    function pauseMandate(bytes32 _mandateId) external onlyRole(EXECUTOR_ROLE) {
+        MandateData storage mandate = mandates[_mandateId];
+
+        if (mandate.sender == address(0)) revert Mandate_InvalidMandateId();
+        if (mandate.status == MandateStatus.PAUSED) return;
+        if (mandate.status != MandateStatus.ACTIVE) revert Mandate_MandateNotActive();
+
+        mandate.status = MandateStatus.PAUSED;
+
+        emit MandatePaused(_mandateId, msg.sender, block.timestamp);
+    }
+
+    /**
+     * @dev Resumes a paused mandate (executor only)
+     * @param _mandateId The mandate ID to resume
+     */
+    function resumeMandate(bytes32 _mandateId) external onlyRole(EXECUTOR_ROLE) {
+        MandateData storage mandate = mandates[_mandateId];
+
+        if (mandate.sender == address(0)) revert Mandate_InvalidMandateId();
+        if (mandate.status != MandateStatus.PAUSED) revert Mandate_MandateNotActive();
+
+        mandate.status = MandateStatus.ACTIVE;
+
+        emit MandateResumed(_mandateId, msg.sender, block.timestamp);
+    }
+
+    /**
+     * @dev Modifies a mandate's policy (requires sender consent via signature)
+     * @param _mandateId The mandate ID to modify
+     * @param _newPolicyHash New policy hash
+     * @param _signatureNonce Unique nonce for replay protection
+     * @param _senderSignature Signature from sender approving the change
+     */
+    function modifyMandate(
+        bytes32 _mandateId,
+        bytes32 _newPolicyHash,
+        uint256 _signatureNonce,
+        bytes memory _senderSignature
+    ) external {
+        MandateData storage mandate = mandates[_mandateId];
+
+        if (mandate.sender == address(0)) revert Mandate_InvalidMandateId();
+        if (mandate.status != MandateStatus.ACTIVE) revert Mandate_MandateNotActive();
+
+        if (usedSignatureNonces[mandate.sender][_signatureNonce]) revert Mandate_SignatureNonceUsed();
+
+        bytes32 messageHash = keccak256(abi.encode(_mandateId, _newPolicyHash, _signatureNonce, block.chainid));
+        bytes32 ethSignedMessageHash = MessageHashUtils.toEthSignedMessageHash(messageHash);
+        address signer = ECDSA.recover(ethSignedMessageHash, _senderSignature);
+        if (signer != mandate.sender) revert Mandate_InvalidSignature();
+
+        usedSignatureNonces[mandate.sender][_signatureNonce] = true;
+
+        bytes32 oldPolicyHash = mandate.policy.policyHash;
+        mandate.policy.policyHash = _newPolicyHash;
+        mandate.modifySignatureNonce++;
+
+        emit PolicyChanged(_mandateId, oldPolicyHash, _newPolicyHash, msg.sender);
     }
 
     /**
      * @dev Toggles mandate active state (pause/unpause)
      * @param _mandateId The mandate ID to toggle
-     * @notice Only executor (authority/business) can toggle mandate state
+     * @notice DEPRECATED: Use pauseMandate/resumeMandate instead
      */
     function toggleMandateState(bytes32 _mandateId) external onlyRole(EXECUTOR_ROLE) {
         MandateData storage mandate = mandates[_mandateId];
 
-        if (mandate.payer == address(0)) revert Mandate_InvalidMandateId();
+        if (mandate.sender == address(0)) revert Mandate_InvalidMandateId();
 
-        // Toggle the state
-        mandate.isActive = !mandate.isActive;
-
-        emit MandateStateToggled(_mandateId, msg.sender, mandate.isActive, block.timestamp);
+        if (mandate.status == MandateStatus.ACTIVE) {
+            mandate.status = MandateStatus.PAUSED;
+            emit MandatePaused(_mandateId, msg.sender, block.timestamp);
+        } else if (mandate.status == MandateStatus.PAUSED) {
+            mandate.status = MandateStatus.ACTIVE;
+            emit MandateResumed(_mandateId, msg.sender, block.timestamp);
+        }
     }
 
     /**
-     * @dev Checks if a mandate can be executed
+     * @dev Check if a mandate can be executed (view function)
      * @param _mandateId The mandate ID to check
      * @param _amount Amount to check
+     * @param _nonce Nonce to check
      * @return canExecute Whether mandate can be executed
      * @return reason Reason if mandate cannot be executed
      */
-    function canExecuteMandate(bytes32 _mandateId, uint256 _amount)
+    function canExecuteMandate(bytes32 _mandateId, uint256 _amount, uint64 _nonce)
         external
         view
         returns (bool canExecute, string memory reason)
     {
         MandateData storage mandate = mandates[_mandateId];
 
-        // Check mandate state
-        if (mandate.payer == address(0)) {
+        if (mandate.sender == address(0)) {
             return (false, "Invalid mandate ID");
         }
-        if (!mandate.isActive) {
+        if (!mandate.isApproved) {
+            return (false, "Mandate not approved");
+        }
+        if (mandate.status != MandateStatus.ACTIVE) {
             return (false, "Mandate not active");
         }
-
-        // Check timing
-        if (block.timestamp > mandate.endTime) {
+        if (executionPaused) {
+            return (false, "Execution paused globally");
+        }
+        if (block.timestamp > mandate.endAt) {
             return (false, "Mandate expired");
         }
-        if (block.timestamp < mandate.startTime) {
+        if (block.timestamp < mandate.startAt) {
             return (false, "Execution too early - start time not reached");
         }
-        if (mandate.lastPaymentTime > 0 && block.timestamp < mandate.lastPaymentTime + mandate.frequency) {
+        if (mandate.executionState.lastExecutionTime > 0 &&
+            block.timestamp < mandate.executionState.lastExecutionTime + mandate.policy.minIntervalSeconds) {
             return (false, "Execution too early - frequency constraint");
         }
-
-        // Check amount
-        if (mandate.debitType == DebitType.Fixed) {
-            if (_amount != mandate.amountPerDebit) {
+        if (_nonce == 0) {
+            return (false, "Invalid nonce");
+        }
+        if (_nonce <= mandate.executionState.executionNonce) {
+            return (false, "Nonce already used");
+        }
+        if (mandate.chargeType == ChargeType.FIXED) {
+            if (_amount != mandate.policy.perExecutionLimit) {
                 return (false, "Fixed debit requires exact amount");
             }
         } else {
-            if (_amount == 0 || _amount > mandate.amountPerDebit) {
+            if (_amount == 0 || _amount > mandate.policy.perExecutionLimit) {
                 return (false, "Variable debit amount invalid");
             }
         }
-
-        if (!mandate.isUnlimitedSpend && mandate.totalPaid + _amount > mandate.totalLimit) {
-            return (false, "Amount exceeds total limit");
+        if (mandate.authorizedLimit != UNLIMITED_ALLOWANCE &&
+            mandate.executionState.totalExecuted + _amount > mandate.authorizedLimit) {
+            return (false, "Amount exceeds authorized limit");
         }
-
-        // Check balance and allowance
+        if (mandate.policy.periodLimit > 0 && mandate.policy.periodWindow > 0) {
+            uint256 currentPeriodStart = block.timestamp - (block.timestamp % mandate.policy.periodWindow);
+            uint256 currentPeriodExecuted = mandate.executionState.lastPeriodTimestamp < currentPeriodStart
+                ? 0
+                : mandate.executionState.periodExecuted;
+            if (currentPeriodExecuted + _amount > mandate.policy.periodLimit) {
+                return (false, "Amount exceeds period limit");
+            }
+        }
         IERC20 token = IERC20(mandate.token);
-        if (token.allowance(mandate.payer, address(this)) < _amount) {
+        if (token.allowance(mandate.sender, address(this)) < _amount) {
             return (false, "Insufficient allowance");
         }
-        if (token.balanceOf(mandate.payer) < _amount) {
+        if (token.balanceOf(mandate.sender) < _amount) {
             return (false, "Insufficient balance");
         }
 
         return (true, "");
     }
 
-    /**
-     * @dev Gets mandate details
-     * @param _mandateId The mandate ID
-     * @return mandate The mandate struct
-     */
-    function getMandate(bytes32 _mandateId) external view returns (MandateData memory) {
-        if (mandates[_mandateId].payer == address(0)) {
+    // ========== VIEW FUNCTIONS ==========
+
+    function getMandate(bytes32 _mandateId)
+        external
+        view
+        returns (MandateData memory mandate)
+    {
+        if (mandates[_mandateId].sender == address(0)) {
             revert Mandate_InvalidMandateId();
         }
         return mandates[_mandateId];
     }
 
-    // Admin functions
+    function getPolicy(bytes32 _mandateId)
+        external
+        view
+        returns (Policy memory policy)
+    {
+        if (mandates[_mandateId].sender == address(0)) {
+            revert Mandate_InvalidMandateId();
+        }
+        return mandates[_mandateId].policy;
+    }
 
-    /**
-     * @dev Adds an executor
-     * @param _executor Address to add as executor
-     */
+    function getExecutionState(bytes32 _mandateId)
+        external
+        view
+        returns (ExecutionState memory state)
+    {
+        if (mandates[_mandateId].sender == address(0)) {
+            revert Mandate_InvalidMandateId();
+        }
+        return mandates[_mandateId].executionState;
+    }
+
+    // ========== ADMIN FUNCTIONS ==========
+
     function addExecutor(address _executor) external onlyRole(DEFAULT_ADMIN_ROLE) {
         _grantRole(EXECUTOR_ROLE, _executor);
         emit ExecutorAdded(_executor);
     }
 
-    /**
-     * @dev Removes an executor
-     * @param _executor Address to remove from executors
-     */
     function removeExecutor(address _executor) external onlyRole(DEFAULT_ADMIN_ROLE) {
         _revokeRole(EXECUTOR_ROLE, _executor);
         emit ExecutorRemoved(_executor);
     }
 
-    /**
-     * @dev Sets token support status
-     * @param _token Token address
-     * @param _supported Whether token is supported
-     */
     function setSupportedToken(address _token, bool _supported) external onlyRole(DEFAULT_ADMIN_ROLE) {
         supportedTokens[_token] = _supported;
         emit TokenSupported(_token, _supported);
     }
 
-    /**
-     * @dev Pauses the contract
-     */
-    function pause() external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function pauseContract() external onlyRole(DEFAULT_ADMIN_ROLE) {
         _pause();
     }
 
-    /**
-     * @dev Unpauses the contract
-     */
-    function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function unpauseContract() external onlyRole(DEFAULT_ADMIN_ROLE) {
         _unpause();
     }
 
-    /**
-     * @dev Emergency cancel mandate (admin only)
-     * @param _mandateId The mandate ID to cancel
-     */
+    function pauseExecution() external onlyRole(PAUSER_ROLE) {
+        executionPaused = true;
+        emit ExecutionPaused(msg.sender, block.timestamp);
+    }
+
+    function resumeExecution() external onlyRole(PAUSER_ROLE) {
+        executionPaused = false;
+        emit ExecutionResumed(msg.sender, block.timestamp);
+    }
+
     function emergencyCancelMandate(bytes32 _mandateId) external onlyRole(DEFAULT_ADMIN_ROLE) {
         MandateData storage mandate = mandates[_mandateId];
 
-        if (mandate.payer == address(0)) revert Mandate_InvalidMandateId();
-        if (!mandate.isActive) revert Mandate_MandateNotActive();
+        if (mandate.sender == address(0)) revert Mandate_InvalidMandateId();
+        if (mandate.status == MandateStatus.CANCELLED || mandate.status == MandateStatus.COMPLETE) {
+            return;
+        }
 
-        mandate.isActive = false;
+        mandate.status = MandateStatus.CANCELLED;
 
-        emit MandateCanceled(_mandateId, mandate.payer, block.timestamp);
+        emit MandateCancelled(_mandateId, msg.sender, block.timestamp);
+    }
+
+    function isExecutionPaused() external view returns (bool) {
+        return executionPaused;
     }
 }

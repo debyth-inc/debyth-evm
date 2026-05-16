@@ -18,4 +18,4 @@ docs/
 # Markdown files except README
 *.md
 !README.md
-!**/README.md
+!**/README.md.DS_Store
