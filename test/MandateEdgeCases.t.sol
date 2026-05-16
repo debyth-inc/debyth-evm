@@ -31,21 +31,19 @@ contract MandateEdgeCasesTest is Test {
     address public sender = makeAddr("sender");
     address public recipient = makeAddr("recipient");
 
-    uint256 constant TOTAL_LIMIT = 1000e6;
+    uint256 constant AUTHORIZED_LIMIT = 1000e6;
     uint256 constant PER_EXECUTION_LIMIT = 100e6;
     uint256 constant MIN_INTERVAL = 30 days;
 
     function computePolicyHash(
-        Mandate.ChargeType chargeType,
         Mandate.Frequency frequency,
         uint256 minIntervalSeconds,
         uint256 perExecutionLimit,
-        uint256 totalLimit,
-        uint256 startAt,
-        uint256 endAt
+        uint256 periodLimit,
+        uint256 periodWindow
     ) internal pure returns (bytes32) {
         return keccak256(abi.encodePacked(
-            chargeType, frequency, minIntervalSeconds, perExecutionLimit, totalLimit, startAt, endAt
+            frequency, minIntervalSeconds, perExecutionLimit, periodLimit, periodWindow
         ));
     }
 
@@ -71,17 +69,17 @@ contract MandateEdgeCasesTest is Test {
         uint256 startAt,
         uint256 endAt
     ) internal {
-        address[] memory empty;
         bytes32 policyHash = computePolicyHash(
-            Mandate.ChargeType.VARIABLE, Mandate.Frequency.MONTHLY, MIN_INTERVAL,
-            PER_EXECUTION_LIMIT, TOTAL_LIMIT, startAt, endAt
+            Mandate.Frequency.MONTHLY, MIN_INTERVAL,
+            PER_EXECUTION_LIMIT, 0, 0
         );
         vm.prank(executor);
         mandate.createMandate(
             sender, mandateId, recipient, address(usdc),
-            TOTAL_LIMIT, PER_EXECUTION_LIMIT,
-            Mandate.ChargeType.VARIABLE, Mandate.Frequency.MONTHLY, MIN_INTERVAL,
-            startAt, endAt, empty, empty, policyHash
+            AUTHORIZED_LIMIT, Mandate.ChargeType.VARIABLE,
+            startAt, endAt,
+            Mandate.Frequency.MONTHLY, MIN_INTERVAL, PER_EXECUTION_LIMIT,
+            0, 0, policyHash
         );
     }
 
@@ -90,23 +88,23 @@ contract MandateEdgeCasesTest is Test {
         uint256 startAt,
         uint256 endAt
     ) internal {
-        address[] memory empty;
         bytes32 policyHash = computePolicyHash(
-            Mandate.ChargeType.FIXED, Mandate.Frequency.MONTHLY, MIN_INTERVAL,
-            PER_EXECUTION_LIMIT, TOTAL_LIMIT, startAt, endAt
+            Mandate.Frequency.MONTHLY, MIN_INTERVAL,
+            PER_EXECUTION_LIMIT, 0, 0
         );
         vm.prank(executor);
         mandate.createMandate(
             sender, mandateId, recipient, address(usdc),
-            TOTAL_LIMIT, PER_EXECUTION_LIMIT,
-            Mandate.ChargeType.FIXED, Mandate.Frequency.MONTHLY, MIN_INTERVAL,
-            startAt, endAt, empty, empty, policyHash
+            AUTHORIZED_LIMIT, Mandate.ChargeType.FIXED,
+            startAt, endAt,
+            Mandate.Frequency.MONTHLY, MIN_INTERVAL, PER_EXECUTION_LIMIT,
+            0, 0, policyHash
         );
     }
 
     function _approveMandate(bytes32 mandateId) internal {
         vm.prank(sender);
-        usdc.approve(address(mandate), TOTAL_LIMIT);
+        usdc.approve(address(mandate), AUTHORIZED_LIMIT);
 
         vm.prank(sender);
         mandate.approveMandate(mandateId);
@@ -121,7 +119,7 @@ contract MandateEdgeCasesTest is Test {
         _createVariableMandate(mandateId, startAt, startAt + 365 days);
 
         vm.prank(sender);
-        usdc.approve(address(mandate), TOTAL_LIMIT);
+        usdc.approve(address(mandate), AUTHORIZED_LIMIT);
 
         vm.prank(sender);
         mandate.approveMandate(mandateId);
@@ -169,7 +167,7 @@ contract MandateEdgeCasesTest is Test {
         _createVariableMandate(mandateId, block.timestamp, block.timestamp + 365 days);
         _approveMandate(mandateId);
 
-        uint256 remaining = TOTAL_LIMIT;
+        uint256 remaining = AUTHORIZED_LIMIT;
         uint64 nonce = 1;
         while (remaining > 0) {
             uint256 amount = remaining >= PER_EXECUTION_LIMIT ? PER_EXECUTION_LIMIT : remaining;
@@ -183,7 +181,7 @@ contract MandateEdgeCasesTest is Test {
         }
 
         Mandate.MandateData memory m = mandate.getMandate(mandateId);
-        assertEq(m.totalExecuted, TOTAL_LIMIT);
+        assertEq(m.executionState.totalExecuted, AUTHORIZED_LIMIT);
         assertEq(uint256(m.status), uint256(Mandate.MandateStatus.COMPLETE));
 
         vm.warp(block.timestamp + MIN_INTERVAL);
@@ -196,23 +194,23 @@ contract MandateEdgeCasesTest is Test {
         address poorSender = makeAddr("poorSender");
         usdc.mint(poorSender, 10e6);
 
-        address[] memory empty;
         bytes32 policyHash = computePolicyHash(
-            Mandate.ChargeType.VARIABLE, Mandate.Frequency.MONTHLY, MIN_INTERVAL,
-            PER_EXECUTION_LIMIT, TOTAL_LIMIT, block.timestamp, block.timestamp + 365 days
+            Mandate.Frequency.MONTHLY, MIN_INTERVAL,
+            PER_EXECUTION_LIMIT, 0, 0
         );
 
         bytes32 mandateId = generateMandateId();
         vm.prank(executor);
         mandate.createMandate(
             poorSender, mandateId, recipient, address(usdc),
-            TOTAL_LIMIT, PER_EXECUTION_LIMIT,
-            Mandate.ChargeType.VARIABLE, Mandate.Frequency.MONTHLY, MIN_INTERVAL,
-            block.timestamp, block.timestamp + 365 days, empty, empty, policyHash
+            AUTHORIZED_LIMIT, Mandate.ChargeType.VARIABLE,
+            block.timestamp, block.timestamp + 365 days,
+            Mandate.Frequency.MONTHLY, MIN_INTERVAL, PER_EXECUTION_LIMIT,
+            0, 0, policyHash
         );
 
         vm.prank(poorSender);
-        usdc.approve(address(mandate), TOTAL_LIMIT);
+        usdc.approve(address(mandate), AUTHORIZED_LIMIT);
 
         vm.prank(poorSender);
         mandate.approveMandate(mandateId);
@@ -323,7 +321,7 @@ contract MandateEdgeCasesTest is Test {
         mandate.executeMandate(mandateId, 50e6, 2);
 
         Mandate.MandateData memory m = mandate.getMandate(mandateId);
-        assertEq(m.totalExecuted, 100e6);
+        assertEq(m.executionState.totalExecuted, 100e6);
     }
 
     // ============ Integer Boundary Tests ============
@@ -333,19 +331,20 @@ contract MandateEdgeCasesTest is Test {
 
         usdc.mint(sender, largeAmount * 10);
 
-        address[] memory empty;
         bytes32 policyHash = computePolicyHash(
-            Mandate.ChargeType.VARIABLE, Mandate.Frequency.MONTHLY, MIN_INTERVAL,
-            largeAmount, 0, block.timestamp, block.timestamp + 365 days
+            Mandate.Frequency.MONTHLY, MIN_INTERVAL,
+            largeAmount, 0, 0
         );
 
         bytes32 mandateId = generateMandateId();
         vm.prank(executor);
         mandate.createMandate(
             sender, mandateId, recipient, address(usdc),
-            0, largeAmount,
-            Mandate.ChargeType.VARIABLE, Mandate.Frequency.MONTHLY, MIN_INTERVAL,
-            block.timestamp, block.timestamp + 365 days, empty, empty, policyHash
+            0, // authorizedLimit = 0 means unlimited
+            Mandate.ChargeType.VARIABLE,
+            block.timestamp, block.timestamp + 365 days,
+            Mandate.Frequency.MONTHLY, MIN_INTERVAL, largeAmount,
+            0, 0, policyHash
         );
 
         vm.prank(sender);
@@ -358,25 +357,25 @@ contract MandateEdgeCasesTest is Test {
         mandate.executeMandate(mandateId, largeAmount, 1);
 
         Mandate.MandateData memory m = mandate.getMandate(mandateId);
-        assertEq(m.totalExecuted, largeAmount);
+        assertEq(m.executionState.totalExecuted, largeAmount);
     }
 
     // ============ Various Charge Types ============
 
     function testVariableMandateMultipleExecutions() public {
-        address[] memory empty;
         bytes32 policyHash = computePolicyHash(
-            Mandate.ChargeType.VARIABLE, Mandate.Frequency.DAILY, 1,
-            PER_EXECUTION_LIMIT, TOTAL_LIMIT, block.timestamp, block.timestamp + 365 days
+            Mandate.Frequency.DAILY, 1,
+            PER_EXECUTION_LIMIT, 0, 0
         );
 
         bytes32 mandateId = generateMandateId();
         vm.prank(executor);
         mandate.createMandate(
             sender, mandateId, recipient, address(usdc),
-            TOTAL_LIMIT, PER_EXECUTION_LIMIT,
-            Mandate.ChargeType.VARIABLE, Mandate.Frequency.DAILY, 1,
-            block.timestamp, block.timestamp + 365 days, empty, empty, policyHash
+            AUTHORIZED_LIMIT, Mandate.ChargeType.VARIABLE,
+            block.timestamp, block.timestamp + 365 days,
+            Mandate.Frequency.DAILY, 1, PER_EXECUTION_LIMIT,
+            0, 0, policyHash
         );
         _approveMandate(mandateId);
 
@@ -392,7 +391,7 @@ contract MandateEdgeCasesTest is Test {
         mandate.executeMandate(mandateId, 50e6, 3);
 
         Mandate.MandateData memory m = mandate.getMandate(mandateId);
-        assertEq(m.totalExecuted, 100e6);
+        assertEq(m.executionState.totalExecuted, 100e6);
     }
 
     // ============ Sender Cancellation ============
@@ -433,15 +432,12 @@ contract MandateEdgeCasesTest is Test {
         uint256 endAt = startAt + 365 days;
 
         bytes32 expectedHash = computePolicyHash(
-            Mandate.ChargeType.VARIABLE, Mandate.Frequency.MONTHLY, MIN_INTERVAL,
-            PER_EXECUTION_LIMIT, TOTAL_LIMIT, startAt, endAt
+            Mandate.Frequency.MONTHLY, MIN_INTERVAL,
+            PER_EXECUTION_LIMIT, 0, 0
         );
 
         bytes32 mandateId = generateMandateId();
         _createVariableMandate(mandateId, startAt, endAt);
-
-        Mandate.MandateData memory m = mandate.getMandate(mandateId);
-        assertEq(m.policyHash, expectedHash);
 
         Mandate.Policy memory p = mandate.getPolicy(mandateId);
         assertEq(p.policyHash, expectedHash);
@@ -458,6 +454,6 @@ contract MandateEdgeCasesTest is Test {
         mandate.executeMandate(mandateId, 30e6, 1);
 
         Mandate.MandateData memory m = mandate.getMandate(mandateId);
-        assertEq(m.totalExecuted, 30e6);
+        assertEq(m.executionState.totalExecuted, 30e6);
     }
 }

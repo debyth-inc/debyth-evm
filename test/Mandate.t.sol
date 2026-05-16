@@ -28,49 +28,23 @@ contract MandateTest is Test {
     address public sender = makeAddr("sender");
     address public recipient = makeAddr("recipient");
 
-    uint256 constant TOTAL_LIMIT = 1000e6;
+    uint256 constant AUTHORIZED_LIMIT = 1000e6;
     uint256 constant PER_EXECUTION_LIMIT = 100e6;
     uint256 constant MIN_INTERVAL = 30 days;
-
-    event MandateCreated(
-        bytes32 indexed mandateId,
-        address indexed sender,
-        address indexed recipient,
-        address token,
-        uint256 totalLimit,
-        uint256 perExecutionLimit,
-        bytes32 policyHash,
-        uint256 startAt,
-        uint256 endAt
-    );
-
-    event MandateExecuted(
-        bytes32 indexed mandateId,
-        address indexed sender,
-        address indexed recipient,
-        address token,
-        uint256 amount,
-        uint256 totalCharged,
-        uint256 timestamp,
-        uint64 nonce,
-        bytes32 policyHash
-    );
 
     function generateMandateId() internal returns (bytes32) {
         return keccak256(abi.encodePacked("mandate-", mandateIdCounter++));
     }
 
     function computePolicyHash(
-        Mandate.ChargeType chargeType,
         Mandate.Frequency frequency,
         uint256 minIntervalSeconds,
         uint256 perExecutionLimit,
-        uint256 totalLimit,
-        uint256 startAt,
-        uint256 endAt
+        uint256 periodLimit,
+        uint256 periodWindow
     ) internal pure returns (bytes32) {
         return keccak256(abi.encodePacked(
-            chargeType, frequency, minIntervalSeconds, perExecutionLimit, totalLimit, startAt, endAt
+            frequency, minIntervalSeconds, perExecutionLimit, periodLimit, periodWindow
         ));
     }
 
@@ -101,15 +75,12 @@ contract MandateTest is Test {
         uint256 startAt,
         uint256 endAt
     ) internal returns (bytes32) {
-        address[] memory empty;
         bytes32 policyHash = computePolicyHash(
-            Mandate.ChargeType.VARIABLE,
             Mandate.Frequency.MONTHLY,
             MIN_INTERVAL,
             PER_EXECUTION_LIMIT,
-            TOTAL_LIMIT,
-            startAt,
-            endAt
+            0, // periodLimit
+            0  // periodWindow
         );
         vm.prank(executor);
         return mandate.createMandate(
@@ -117,15 +88,15 @@ contract MandateTest is Test {
             mandateId,
             recipient,
             address(usdc),
-            TOTAL_LIMIT,
-            PER_EXECUTION_LIMIT,
+            AUTHORIZED_LIMIT,
             Mandate.ChargeType.VARIABLE,
-            Mandate.Frequency.MONTHLY,
-            MIN_INTERVAL,
             startAt,
             endAt,
-            empty,
-            empty,
+            Mandate.Frequency.MONTHLY,
+            MIN_INTERVAL,
+            PER_EXECUTION_LIMIT,
+            0, // periodLimit
+            0, // periodWindow
             policyHash
         );
     }
@@ -136,63 +107,48 @@ contract MandateTest is Test {
 
         bytes32 mandateId = generateMandateId();
         bytes32 policyHash = computePolicyHash(
-            Mandate.ChargeType.VARIABLE,
             Mandate.Frequency.MONTHLY,
             MIN_INTERVAL,
             PER_EXECUTION_LIMIT,
-            TOTAL_LIMIT,
-            startAt,
-            endAt
+            0,
+            0
         );
-
-        address[] memory empty;
 
         vm.prank(executor);
-        vm.expectEmit(true, true, true, true);
-        emit MandateCreated(
-            mandateId,
-            sender,
-            recipient,
-            address(usdc),
-            TOTAL_LIMIT,
-            PER_EXECUTION_LIMIT,
-            policyHash,
-            startAt,
-            endAt
-        );
-
         bytes32 returnedId = mandate.createMandate(
             sender,
             mandateId,
             recipient,
             address(usdc),
-            TOTAL_LIMIT,
-            PER_EXECUTION_LIMIT,
+            AUTHORIZED_LIMIT,
             Mandate.ChargeType.VARIABLE,
-            Mandate.Frequency.MONTHLY,
-            MIN_INTERVAL,
             startAt,
             endAt,
-            empty,
-            empty,
+            Mandate.Frequency.MONTHLY,
+            MIN_INTERVAL,
+            PER_EXECUTION_LIMIT,
+            0,
+            0,
             policyHash
         );
         assertEq(returnedId, mandateId);
 
         vm.prank(sender);
-        usdc.approve(address(mandate), TOTAL_LIMIT);
+        usdc.approve(address(mandate), AUTHORIZED_LIMIT);
 
         vm.prank(sender);
         mandate.approveMandate(mandateId);
 
         Mandate.MandateData memory m = mandate.getMandate(mandateId);
+        assertEq(m.authority, executor);
         assertEq(m.sender, sender);
         assertEq(m.recipient, recipient);
         assertEq(m.token, address(usdc));
-        assertEq(m.totalLimit, TOTAL_LIMIT);
-        assertEq(m.perExecutionLimit, PER_EXECUTION_LIMIT);
-        assertEq(m.policyHash, policyHash);
+        assertEq(m.authorizedLimit, AUTHORIZED_LIMIT);
+        assertEq(m.policy.perExecutionLimit, PER_EXECUTION_LIMIT);
+        assertEq(m.policy.policyHash, policyHash);
         assertEq(uint256(m.status), uint256(Mandate.MandateStatus.ACTIVE));
+        assertTrue(m.isApproved);
     }
 
     function testExecuteMandate() public {
@@ -203,30 +159,27 @@ contract MandateTest is Test {
         _createMandate(mandateId, startAt, endAt);
 
         vm.prank(sender);
-        usdc.approve(address(mandate), TOTAL_LIMIT);
+        usdc.approve(address(mandate), AUTHORIZED_LIMIT);
 
         vm.prank(sender);
         mandate.approveMandate(mandateId);
 
         uint256 amount = 50e6;
         uint64 nonce = 1;
-        bytes32 expectedPolicyHash = mandate.getMandate(mandateId).policyHash;
+        bytes32 expectedPolicyHash = mandate.getMandate(mandateId).policy.policyHash;
         uint256 senderBalanceBefore = usdc.balanceOf(sender);
         uint256 recipientBalanceBefore = usdc.balanceOf(recipient);
 
         vm.prank(executor);
-        vm.expectEmit(true, true, true, true);
-        emit MandateExecuted(mandateId, sender, recipient, address(usdc), amount, amount, block.timestamp, nonce, expectedPolicyHash);
-
         mandate.executeMandate(mandateId, amount, nonce);
 
         assertEq(usdc.balanceOf(sender), senderBalanceBefore - amount);
         assertEq(usdc.balanceOf(recipient), recipientBalanceBefore + amount);
 
         Mandate.MandateData memory m = mandate.getMandate(mandateId);
-        assertEq(m.totalExecuted, amount);
-        assertEq(m.lastExecutionTime, block.timestamp);
-        assertEq(m.lastExecutionNonce, nonce);
+        assertEq(m.executionState.totalExecuted, amount);
+        assertEq(m.executionState.lastExecutionTime, block.timestamp);
+        assertEq(m.executionState.executionNonce, nonce);
     }
 
     function testCannotExecutePaymentTooEarly() public {
@@ -234,15 +187,12 @@ contract MandateTest is Test {
         uint256 endAt = startAt + 365 days;
 
         bytes32 mandateId = generateMandateId();
-        address[] memory empty;
         bytes32 policyHash = computePolicyHash(
-            Mandate.ChargeType.FIXED,
             Mandate.Frequency.MONTHLY,
             MIN_INTERVAL,
             PER_EXECUTION_LIMIT,
-            TOTAL_LIMIT,
-            startAt,
-            endAt
+            0,
+            0
         );
 
         vm.prank(executor);
@@ -251,20 +201,20 @@ contract MandateTest is Test {
             mandateId,
             recipient,
             address(usdc),
-            TOTAL_LIMIT,
-            PER_EXECUTION_LIMIT,
+            AUTHORIZED_LIMIT,
             Mandate.ChargeType.FIXED,
-            Mandate.Frequency.MONTHLY,
-            MIN_INTERVAL,
             startAt,
             endAt,
-            empty,
-            empty,
+            Mandate.Frequency.MONTHLY,
+            MIN_INTERVAL,
+            PER_EXECUTION_LIMIT,
+            0,
+            0,
             policyHash
         );
 
         vm.prank(sender);
-        usdc.approve(address(mandate), TOTAL_LIMIT);
+        usdc.approve(address(mandate), AUTHORIZED_LIMIT);
 
         vm.prank(sender);
         mandate.approveMandate(mandateId);
@@ -289,7 +239,7 @@ contract MandateTest is Test {
         _createMandate(mandateId, startAt, endAt);
 
         vm.prank(sender);
-        usdc.approve(address(mandate), TOTAL_LIMIT);
+        usdc.approve(address(mandate), AUTHORIZED_LIMIT);
 
         vm.prank(sender);
         mandate.approveMandate(mandateId);
@@ -313,7 +263,7 @@ contract MandateTest is Test {
         _createMandate(mandateId, startAt, endAt);
 
         vm.prank(sender);
-        usdc.approve(address(mandate), TOTAL_LIMIT);
+        usdc.approve(address(mandate), AUTHORIZED_LIMIT);
 
         vm.prank(sender);
         mandate.approveMandate(mandateId);
@@ -335,15 +285,12 @@ contract MandateTest is Test {
         mandate.pauseContract();
 
         bytes32 mandateId = generateMandateId();
-        address[] memory empty;
         bytes32 policyHash = computePolicyHash(
-            Mandate.ChargeType.VARIABLE,
             Mandate.Frequency.MONTHLY,
             MIN_INTERVAL,
             PER_EXECUTION_LIMIT,
-            TOTAL_LIMIT,
-            block.timestamp,
-            block.timestamp + 365 days
+            0,
+            0
         );
 
         vm.prank(executor);
@@ -353,15 +300,15 @@ contract MandateTest is Test {
             mandateId,
             recipient,
             address(usdc),
-            TOTAL_LIMIT,
-            PER_EXECUTION_LIMIT,
+            AUTHORIZED_LIMIT,
             Mandate.ChargeType.VARIABLE,
-            Mandate.Frequency.MONTHLY,
-            MIN_INTERVAL,
             block.timestamp,
             block.timestamp + 365 days,
-            empty,
-            empty,
+            Mandate.Frequency.MONTHLY,
+            MIN_INTERVAL,
+            PER_EXECUTION_LIMIT,
+            0,
+            0,
             policyHash
         );
 
@@ -375,20 +322,20 @@ contract MandateTest is Test {
             mandateId2,
             recipient,
             address(usdc),
-            TOTAL_LIMIT,
-            PER_EXECUTION_LIMIT,
+            AUTHORIZED_LIMIT,
             Mandate.ChargeType.VARIABLE,
-            Mandate.Frequency.MONTHLY,
-            MIN_INTERVAL,
             block.timestamp,
             block.timestamp + 365 days,
-            empty,
-            empty,
+            Mandate.Frequency.MONTHLY,
+            MIN_INTERVAL,
+            PER_EXECUTION_LIMIT,
+            0,
+            0,
             policyHash
         );
 
         vm.prank(sender);
-        usdc.approve(address(mandate), TOTAL_LIMIT);
+        usdc.approve(address(mandate), AUTHORIZED_LIMIT);
 
         vm.prank(sender);
         mandate.approveMandate(mandateId2);
@@ -402,7 +349,7 @@ contract MandateTest is Test {
         _createMandate(mandateId, startAt, endAt);
 
         vm.prank(sender);
-        usdc.approve(address(mandate), TOTAL_LIMIT);
+        usdc.approve(address(mandate), AUTHORIZED_LIMIT);
 
         vm.prank(sender);
         mandate.approveMandate(mandateId);

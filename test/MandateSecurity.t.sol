@@ -5,6 +5,7 @@ import {Test} from "forge-std/Test.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {Mandate} from "../src/Mandate.sol";
 import {TransparentUpgradeableProxy} from "@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol";
+import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 
 contract MockERC20 is ERC20 {
     constructor(string memory name, string memory symbol) ERC20(name, symbol) {
@@ -84,21 +85,19 @@ contract MandateSecurityTest is Test {
     address public recipient = makeAddr("recipient");
     address public unauthorized = makeAddr("unauthorized");
 
-    uint256 constant TOTAL_LIMIT = 1000e6;
+    uint256 constant AUTHORIZED_LIMIT = 1000e6;
     uint256 constant PER_EXECUTION_LIMIT = 100e6;
     uint256 constant MIN_INTERVAL = 30 days;
 
     function computePolicyHash(
-        Mandate.ChargeType chargeType,
         Mandate.Frequency frequency,
         uint256 minIntervalSeconds,
         uint256 perExecutionLimit,
-        uint256 totalLimit,
-        uint256 startAt,
-        uint256 endAt
+        uint256 periodLimit,
+        uint256 periodWindow
     ) internal pure returns (bytes32) {
         return keccak256(abi.encodePacked(
-            chargeType, frequency, minIntervalSeconds, perExecutionLimit, totalLimit, startAt, endAt
+            frequency, minIntervalSeconds, perExecutionLimit, periodLimit, periodWindow
         ));
     }
 
@@ -130,15 +129,12 @@ contract MandateSecurityTest is Test {
         uint256 startAt,
         uint256 endAt
     ) internal {
-        address[] memory empty;
         bytes32 policyHash = computePolicyHash(
-            Mandate.ChargeType.VARIABLE,
             Mandate.Frequency.MONTHLY,
             MIN_INTERVAL,
             PER_EXECUTION_LIMIT,
-            TOTAL_LIMIT,
-            startAt,
-            endAt
+            0,
+            0
         );
         vm.prank(executor);
         mandate.createMandate(
@@ -146,22 +142,22 @@ contract MandateSecurityTest is Test {
             mandateId,
             recipient,
             address(usdc),
-            TOTAL_LIMIT,
-            PER_EXECUTION_LIMIT,
+            AUTHORIZED_LIMIT,
             Mandate.ChargeType.VARIABLE,
-            Mandate.Frequency.MONTHLY,
-            MIN_INTERVAL,
             startAt,
             endAt,
-            empty,
-            empty,
+            Mandate.Frequency.MONTHLY,
+            MIN_INTERVAL,
+            PER_EXECUTION_LIMIT,
+            0,
+            0,
             policyHash
         );
     }
 
     function _approveMandate(bytes32 mandateId) internal {
         vm.prank(sender);
-        usdc.approve(address(mandate), TOTAL_LIMIT);
+        usdc.approve(address(mandate), AUTHORIZED_LIMIT);
 
         vm.prank(sender);
         mandate.approveMandate(mandateId);
@@ -292,87 +288,87 @@ contract MandateSecurityTest is Test {
     // ============ Edge Case Tests ============
 
     function testCannotCreateMandateWithZeroAddress() public {
-        address[] memory empty;
         bytes32 policyHash = computePolicyHash(
-            Mandate.ChargeType.VARIABLE, Mandate.Frequency.MONTHLY, MIN_INTERVAL,
-            PER_EXECUTION_LIMIT, TOTAL_LIMIT, block.timestamp, block.timestamp + 365 days
+            Mandate.Frequency.MONTHLY, MIN_INTERVAL,
+            PER_EXECUTION_LIMIT, 0, 0
         );
 
         vm.prank(executor);
         vm.expectRevert(Mandate.Mandate_InvalidParameters.selector);
         mandate.createMandate(
             sender, generateMandateId(), address(0), address(usdc),
-            TOTAL_LIMIT, PER_EXECUTION_LIMIT,
-            Mandate.ChargeType.VARIABLE, Mandate.Frequency.MONTHLY, MIN_INTERVAL,
-            block.timestamp, block.timestamp + 365 days, empty, empty, policyHash
+            AUTHORIZED_LIMIT, Mandate.ChargeType.VARIABLE,
+            block.timestamp, block.timestamp + 365 days,
+            Mandate.Frequency.MONTHLY, MIN_INTERVAL, PER_EXECUTION_LIMIT,
+            0, 0, policyHash
         );
     }
 
     function testCannotCreateMandateWithZeroPerExecutionLimit() public {
-        address[] memory empty;
         bytes32 policyHash = computePolicyHash(
-            Mandate.ChargeType.VARIABLE, Mandate.Frequency.MONTHLY, MIN_INTERVAL,
-            0, TOTAL_LIMIT, block.timestamp, block.timestamp + 365 days
+            Mandate.Frequency.MONTHLY, MIN_INTERVAL,
+            0, 0, 0
         );
 
         vm.prank(executor);
         vm.expectRevert(Mandate.Mandate_InvalidParameters.selector);
         mandate.createMandate(
             sender, generateMandateId(), recipient, address(usdc),
-            TOTAL_LIMIT, 0,
-            Mandate.ChargeType.VARIABLE, Mandate.Frequency.MONTHLY, MIN_INTERVAL,
-            block.timestamp, block.timestamp + 365 days, empty, empty, policyHash
+            AUTHORIZED_LIMIT, Mandate.ChargeType.VARIABLE,
+            block.timestamp, block.timestamp + 365 days,
+            Mandate.Frequency.MONTHLY, MIN_INTERVAL, 0,
+            0, 0, policyHash
         );
     }
 
     function testCannotCreateMandateWithZeroMinInterval() public {
-        address[] memory empty;
         bytes32 policyHash = computePolicyHash(
-            Mandate.ChargeType.VARIABLE, Mandate.Frequency.MONTHLY, 0,
-            PER_EXECUTION_LIMIT, TOTAL_LIMIT, block.timestamp, block.timestamp + 365 days
+            Mandate.Frequency.MONTHLY, 0,
+            PER_EXECUTION_LIMIT, 0, 0
         );
 
         vm.prank(executor);
         vm.expectRevert(Mandate.Mandate_InvalidParameters.selector);
         mandate.createMandate(
             sender, generateMandateId(), recipient, address(usdc),
-            TOTAL_LIMIT, PER_EXECUTION_LIMIT,
-            Mandate.ChargeType.VARIABLE, Mandate.Frequency.MONTHLY, 0,
-            block.timestamp, block.timestamp + 365 days, empty, empty, policyHash
+            AUTHORIZED_LIMIT, Mandate.ChargeType.VARIABLE,
+            block.timestamp, block.timestamp + 365 days,
+            Mandate.Frequency.MONTHLY, 0, PER_EXECUTION_LIMIT,
+            0, 0, policyHash
         );
     }
 
     function testCannotCreateMandateWithEndTimeBeforeStart() public {
-        address[] memory empty;
         bytes32 policyHash = computePolicyHash(
-            Mandate.ChargeType.VARIABLE, Mandate.Frequency.MONTHLY, MIN_INTERVAL,
-            PER_EXECUTION_LIMIT, TOTAL_LIMIT, block.timestamp, block.timestamp - 1
+            Mandate.Frequency.MONTHLY, MIN_INTERVAL,
+            PER_EXECUTION_LIMIT, 0, 0
         );
 
         vm.prank(executor);
         vm.expectRevert(Mandate.Mandate_InvalidParameters.selector);
         mandate.createMandate(
             sender, generateMandateId(), recipient, address(usdc),
-            TOTAL_LIMIT, PER_EXECUTION_LIMIT,
-            Mandate.ChargeType.VARIABLE, Mandate.Frequency.MONTHLY, MIN_INTERVAL,
-            block.timestamp, block.timestamp - 1, empty, empty, policyHash
+            AUTHORIZED_LIMIT, Mandate.ChargeType.VARIABLE,
+            block.timestamp, block.timestamp - 1,
+            Mandate.Frequency.MONTHLY, MIN_INTERVAL, PER_EXECUTION_LIMIT,
+            0, 0, policyHash
         );
     }
 
     function testCannotCreateMandateWithUnsupportedToken() public {
-        address[] memory empty;
         bytes32 policyHash = computePolicyHash(
-            Mandate.ChargeType.VARIABLE, Mandate.Frequency.MONTHLY, MIN_INTERVAL,
-            PER_EXECUTION_LIMIT, TOTAL_LIMIT, block.timestamp, block.timestamp + 365 days
+            Mandate.Frequency.MONTHLY, MIN_INTERVAL,
+            PER_EXECUTION_LIMIT, 0, 0
         );
 
         vm.prank(executor);
         vm.expectRevert(Mandate.Mandate_UnsupportedToken.selector);
         mandate.createMandate(
             sender, generateMandateId(), recipient, makeAddr("unsupported"),
-            TOTAL_LIMIT, PER_EXECUTION_LIMIT,
-            Mandate.ChargeType.VARIABLE, Mandate.Frequency.MONTHLY, MIN_INTERVAL,
-            block.timestamp, block.timestamp + 365 days, empty, empty, policyHash
+            AUTHORIZED_LIMIT, Mandate.ChargeType.VARIABLE,
+            block.timestamp, block.timestamp + 365 days,
+            Mandate.Frequency.MONTHLY, MIN_INTERVAL, PER_EXECUTION_LIMIT,
+            0, 0, policyHash
         );
     }
 
@@ -400,7 +396,7 @@ contract MandateSecurityTest is Test {
         _createMandate(mandateId, block.timestamp, block.timestamp + 365 days);
 
         vm.prank(sender);
-        usdc.approve(address(mandate), TOTAL_LIMIT);
+        usdc.approve(address(mandate), AUTHORIZED_LIMIT);
 
         vm.prank(sender);
         mandate.approveMandate(mandateId);
@@ -439,19 +435,19 @@ contract MandateSecurityTest is Test {
         vm.prank(admin);
         mandate.pauseContract();
 
-        address[] memory empty;
         bytes32 policyHash = computePolicyHash(
-            Mandate.ChargeType.VARIABLE, Mandate.Frequency.MONTHLY, MIN_INTERVAL,
-            PER_EXECUTION_LIMIT, TOTAL_LIMIT, block.timestamp, block.timestamp + 365 days
+            Mandate.Frequency.MONTHLY, MIN_INTERVAL,
+            PER_EXECUTION_LIMIT, 0, 0
         );
 
         vm.prank(executor);
         vm.expectRevert(abi.encodeWithSignature("EnforcedPause()"));
         mandate.createMandate(
             sender, generateMandateId(), recipient, address(usdc),
-            TOTAL_LIMIT, PER_EXECUTION_LIMIT,
-            Mandate.ChargeType.VARIABLE, Mandate.Frequency.MONTHLY, MIN_INTERVAL,
-            block.timestamp, block.timestamp + 365 days, empty, empty, policyHash
+            AUTHORIZED_LIMIT, Mandate.ChargeType.VARIABLE,
+            block.timestamp, block.timestamp + 365 days,
+            Mandate.Frequency.MONTHLY, MIN_INTERVAL, PER_EXECUTION_LIMIT,
+            0, 0, policyHash
         );
     }
 
@@ -481,23 +477,23 @@ contract MandateSecurityTest is Test {
     // ============ Debit Type Tests ============
 
     function testFixedDebitRequiresExactAmount() public {
-        address[] memory empty;
         bytes32 policyHash = computePolicyHash(
-            Mandate.ChargeType.FIXED, Mandate.Frequency.MONTHLY, MIN_INTERVAL,
-            PER_EXECUTION_LIMIT, TOTAL_LIMIT, block.timestamp, block.timestamp + 365 days
+            Mandate.Frequency.MONTHLY, MIN_INTERVAL,
+            PER_EXECUTION_LIMIT, 0, 0
         );
 
         bytes32 mandateId = generateMandateId();
         vm.prank(executor);
         mandate.createMandate(
             sender, mandateId, recipient, address(usdc),
-            TOTAL_LIMIT, PER_EXECUTION_LIMIT,
-            Mandate.ChargeType.FIXED, Mandate.Frequency.MONTHLY, MIN_INTERVAL,
-            block.timestamp, block.timestamp + 365 days, empty, empty, policyHash
+            AUTHORIZED_LIMIT, Mandate.ChargeType.FIXED,
+            block.timestamp, block.timestamp + 365 days,
+            Mandate.Frequency.MONTHLY, MIN_INTERVAL, PER_EXECUTION_LIMIT,
+            0, 0, policyHash
         );
 
         vm.prank(sender);
-        usdc.approve(address(mandate), TOTAL_LIMIT);
+        usdc.approve(address(mandate), AUTHORIZED_LIMIT);
 
         vm.prank(sender);
         mandate.approveMandate(mandateId);
@@ -554,23 +550,23 @@ contract MandateSecurityTest is Test {
         vm.prank(admin);
         mandate.setSupportedToken(address(malToken), true);
 
-        address[] memory empty;
         bytes32 policyHash = computePolicyHash(
-            Mandate.ChargeType.VARIABLE, Mandate.Frequency.MONTHLY, MIN_INTERVAL,
-            PER_EXECUTION_LIMIT, TOTAL_LIMIT, block.timestamp, block.timestamp + 365 days
+            Mandate.Frequency.MONTHLY, MIN_INTERVAL,
+            PER_EXECUTION_LIMIT, 0, 0
         );
 
         bytes32 mandateId = generateMandateId();
         vm.prank(executor);
         mandate.createMandate(
             sender, mandateId, recipient, address(malToken),
-            TOTAL_LIMIT, PER_EXECUTION_LIMIT,
-            Mandate.ChargeType.VARIABLE, Mandate.Frequency.MONTHLY, MIN_INTERVAL,
-            block.timestamp, block.timestamp + 365 days, empty, empty, policyHash
+            AUTHORIZED_LIMIT, Mandate.ChargeType.VARIABLE,
+            block.timestamp, block.timestamp + 365 days,
+            Mandate.Frequency.MONTHLY, MIN_INTERVAL, PER_EXECUTION_LIMIT,
+            0, 0, policyHash
         );
 
         vm.prank(sender);
-        malToken.approve(address(mandate), TOTAL_LIMIT);
+        malToken.approve(address(mandate), AUTHORIZED_LIMIT);
 
         vm.prank(sender);
         mandate.approveMandate(mandateId);
@@ -581,7 +577,7 @@ contract MandateSecurityTest is Test {
         mandate.executeMandate(mandateId, PER_EXECUTION_LIMIT, 1);
 
         Mandate.MandateData memory m = mandate.getMandate(mandateId);
-        assertEq(m.totalExecuted, PER_EXECUTION_LIMIT);
+        assertEq(m.executionState.totalExecuted, PER_EXECUTION_LIMIT);
     }
 
     // ============ Fee-on-Transfer Tests ============
@@ -590,23 +586,23 @@ contract MandateSecurityTest is Test {
         vm.prank(admin);
         mandate.setSupportedToken(address(feeToken), true);
 
-        address[] memory empty;
         bytes32 policyHash = computePolicyHash(
-            Mandate.ChargeType.VARIABLE, Mandate.Frequency.MONTHLY, MIN_INTERVAL,
-            PER_EXECUTION_LIMIT, TOTAL_LIMIT, block.timestamp, block.timestamp + 365 days
+            Mandate.Frequency.MONTHLY, MIN_INTERVAL,
+            PER_EXECUTION_LIMIT, 0, 0
         );
 
         bytes32 mandateId = generateMandateId();
         vm.prank(executor);
         mandate.createMandate(
             sender, mandateId, recipient, address(feeToken),
-            TOTAL_LIMIT, PER_EXECUTION_LIMIT,
-            Mandate.ChargeType.VARIABLE, Mandate.Frequency.MONTHLY, MIN_INTERVAL,
-            block.timestamp, block.timestamp + 365 days, empty, empty, policyHash
+            AUTHORIZED_LIMIT, Mandate.ChargeType.VARIABLE,
+            block.timestamp, block.timestamp + 365 days,
+            Mandate.Frequency.MONTHLY, MIN_INTERVAL, PER_EXECUTION_LIMIT,
+            0, 0, policyHash
         );
 
         vm.prank(sender);
-        feeToken.approve(address(mandate), TOTAL_LIMIT);
+        feeToken.approve(address(mandate), AUTHORIZED_LIMIT);
 
         vm.prank(sender);
         mandate.approveMandate(mandateId);
@@ -620,7 +616,7 @@ contract MandateSecurityTest is Test {
         uint256 recipientBalanceAfter = feeToken.balanceOf(recipient);
         uint256 actualReceived = recipientBalanceAfter - recipientBalanceBefore;
 
-        assertEq(m.totalExecuted, PER_EXECUTION_LIMIT);
+        assertEq(m.executionState.totalExecuted, PER_EXECUTION_LIMIT);
         assertTrue(actualReceived < PER_EXECUTION_LIMIT);
     }
 
@@ -637,20 +633,20 @@ contract MandateSecurityTest is Test {
     // ============ Unlimited Allowance Tests ============
 
     function testUnlimitedMandateApproval() public {
-        address[] memory empty;
         bytes32 policyHash = computePolicyHash(
-            Mandate.ChargeType.VARIABLE, Mandate.Frequency.MONTHLY, MIN_INTERVAL,
-            PER_EXECUTION_LIMIT, 0, block.timestamp, block.timestamp + 365 days
+            Mandate.Frequency.MONTHLY, MIN_INTERVAL,
+            PER_EXECUTION_LIMIT, 0, 0
         );
 
         bytes32 mandateId = generateMandateId();
         vm.prank(executor);
         mandate.createMandate(
             sender, mandateId, recipient, address(usdc),
-            0, // totalLimit = 0 means unlimited
-            PER_EXECUTION_LIMIT,
-            Mandate.ChargeType.VARIABLE, Mandate.Frequency.MONTHLY, MIN_INTERVAL,
-            block.timestamp, block.timestamp + 365 days, empty, empty, policyHash
+            0, // authorizedLimit = 0 means unlimited
+            Mandate.ChargeType.VARIABLE,
+            block.timestamp, block.timestamp + 365 days,
+            Mandate.Frequency.MONTHLY, MIN_INTERVAL, PER_EXECUTION_LIMIT,
+            0, 0, policyHash
         );
 
         vm.prank(sender);
@@ -660,6 +656,241 @@ contract MandateSecurityTest is Test {
         mandate.approveMandate(mandateId);
 
         Mandate.MandateData memory m = mandate.getMandate(mandateId);
-        assertEq(m.totalLimit, type(uint256).max);
+        assertEq(m.authorizedLimit, type(uint256).max);
+    }
+
+    // ============ Policy Exceeds Authority Tests ============
+
+    function testPolicyCannotExceedAuthority() public {
+        bytes32 policyHash = computePolicyHash(
+            Mandate.Frequency.MONTHLY, MIN_INTERVAL,
+            2000e6, 0, 0 // perExecutionLimit > authorizedLimit
+        );
+
+        vm.prank(executor);
+        vm.expectRevert(Mandate.Mandate_PolicyExceedsAuthority.selector);
+        mandate.createMandate(
+            sender, generateMandateId(), recipient, address(usdc),
+            1000e6, // authorizedLimit
+            Mandate.ChargeType.VARIABLE,
+            block.timestamp, block.timestamp + 365 days,
+            Mandate.Frequency.MONTHLY, MIN_INTERVAL, 2000e6, // perExecutionLimit > authorizedLimit
+            0, 0, policyHash
+        );
+    }
+
+    // ============ Toggle Mandate State Access Control ============
+
+    function testNonExecutorCannotToggleMandateState() public {
+        bytes32 mandateId = generateMandateId();
+        _createMandate(mandateId, block.timestamp, block.timestamp + 365 days);
+        _approveMandate(mandateId);
+
+        vm.prank(unauthorized);
+        vm.expectRevert();
+        mandate.toggleMandateState(mandateId);
+    }
+
+    function testExecutorCanToggleMandateState() public {
+        bytes32 mandateId = generateMandateId();
+        _createMandate(mandateId, block.timestamp, block.timestamp + 365 days);
+        _approveMandate(mandateId);
+
+        vm.prank(executor);
+        mandate.toggleMandateState(mandateId);
+
+        Mandate.MandateData memory m = mandate.getMandate(mandateId);
+        assertEq(uint256(m.status), uint256(Mandate.MandateStatus.PAUSED));
+    }
+
+    // ============ Modify Mandate Signature Tests ============
+
+    function testModifyMandateWithValidSignature() public {
+        bytes32 newPolicyHash = keccak256("new-policy");
+        uint256 signatureNonce = 1;
+        uint256 senderPrivateKey = 1;
+        address expectedSender = vm.addr(senderPrivateKey);
+
+        bytes32 policyHash = computePolicyHash(
+            Mandate.Frequency.MONTHLY, MIN_INTERVAL,
+            PER_EXECUTION_LIMIT, 0, 0
+        );
+        bytes32 mandateId = generateMandateId();
+        vm.prank(executor);
+        mandate.createMandate(
+            expectedSender, mandateId, recipient, address(usdc),
+            AUTHORIZED_LIMIT, Mandate.ChargeType.VARIABLE,
+            block.timestamp, block.timestamp + 365 days,
+            Mandate.Frequency.MONTHLY, MIN_INTERVAL, PER_EXECUTION_LIMIT,
+            0, 0, policyHash
+        );
+
+        vm.prank(expectedSender);
+        usdc.approve(address(mandate), AUTHORIZED_LIMIT);
+
+        vm.prank(expectedSender);
+        mandate.approveMandate(mandateId);
+
+        bytes32 messageHash = keccak256(abi.encode(mandateId, newPolicyHash, signatureNonce, block.chainid));
+        bytes32 ethSignedMessageHash = MessageHashUtils.toEthSignedMessageHash(messageHash);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(senderPrivateKey, ethSignedMessageHash);
+        bytes memory signature = abi.encodePacked(r, s, v);
+
+        vm.prank(expectedSender);
+        mandate.modifyMandate(mandateId, newPolicyHash, signatureNonce, signature);
+
+        Mandate.Policy memory p = mandate.getPolicy(mandateId);
+        assertEq(p.policyHash, newPolicyHash);
+    }
+
+    function testModifyMandateWithInvalidSignature() public {
+        bytes32 mandateId = generateMandateId();
+        _createMandate(mandateId, block.timestamp, block.timestamp + 365 days);
+        _approveMandate(mandateId);
+
+        bytes32 newPolicyHash = keccak256("new-policy");
+        uint256 signatureNonce = 1;
+        uint256 wrongPrivateKey = 2;
+
+        bytes32 messageHash = keccak256(abi.encode(mandateId, newPolicyHash, signatureNonce, block.chainid));
+        bytes32 ethSignedMessageHash = MessageHashUtils.toEthSignedMessageHash(messageHash);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(wrongPrivateKey, ethSignedMessageHash);
+        bytes memory signature = abi.encodePacked(r, s, v);
+
+        vm.prank(sender);
+        vm.expectRevert(Mandate.Mandate_InvalidSignature.selector);
+        mandate.modifyMandate(mandateId, newPolicyHash, signatureNonce, signature);
+    }
+
+    function testModifyMandateReplayProtection() public {
+        uint256 senderPrivateKey = 1;
+        address expectedSender = vm.addr(senderPrivateKey);
+
+        bytes32 policyHash = computePolicyHash(
+            Mandate.Frequency.MONTHLY, MIN_INTERVAL,
+            PER_EXECUTION_LIMIT, 0, 0
+        );
+        bytes32 mandateId = generateMandateId();
+        vm.prank(executor);
+        mandate.createMandate(
+            expectedSender, mandateId, recipient, address(usdc),
+            AUTHORIZED_LIMIT, Mandate.ChargeType.VARIABLE,
+            block.timestamp, block.timestamp + 365 days,
+            Mandate.Frequency.MONTHLY, MIN_INTERVAL, PER_EXECUTION_LIMIT,
+            0, 0, policyHash
+        );
+
+        vm.prank(expectedSender);
+        usdc.approve(address(mandate), AUTHORIZED_LIMIT);
+
+        vm.prank(expectedSender);
+        mandate.approveMandate(mandateId);
+
+        bytes32 newPolicyHash = keccak256("new-policy");
+        uint256 signatureNonce = 1;
+
+        bytes32 messageHash = keccak256(abi.encode(mandateId, newPolicyHash, signatureNonce, block.chainid));
+        bytes32 ethSignedMessageHash = MessageHashUtils.toEthSignedMessageHash(messageHash);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(senderPrivateKey, ethSignedMessageHash);
+        bytes memory signature = abi.encodePacked(r, s, v);
+
+        vm.prank(expectedSender);
+        mandate.modifyMandate(mandateId, newPolicyHash, signatureNonce, signature);
+
+        vm.prank(expectedSender);
+        vm.expectRevert(Mandate.Mandate_SignatureNonceUsed.selector);
+        mandate.modifyMandate(mandateId, newPolicyHash, signatureNonce, signature);
+    }
+
+    function testModifyMandateRelayerPattern() public {
+        uint256 senderPrivateKey = 1;
+        address expectedSender = vm.addr(senderPrivateKey);
+
+        bytes32 policyHash = computePolicyHash(
+            Mandate.Frequency.MONTHLY, MIN_INTERVAL,
+            PER_EXECUTION_LIMIT, 0, 0
+        );
+        bytes32 mandateId = generateMandateId();
+        vm.prank(executor);
+        mandate.createMandate(
+            expectedSender, mandateId, recipient, address(usdc),
+            AUTHORIZED_LIMIT, Mandate.ChargeType.VARIABLE,
+            block.timestamp, block.timestamp + 365 days,
+            Mandate.Frequency.MONTHLY, MIN_INTERVAL, PER_EXECUTION_LIMIT,
+            0, 0, policyHash
+        );
+
+        vm.prank(expectedSender);
+        usdc.approve(address(mandate), AUTHORIZED_LIMIT);
+
+        vm.prank(expectedSender);
+        mandate.approveMandate(mandateId);
+
+        bytes32 newPolicyHash = keccak256("new-policy");
+        uint256 signatureNonce = 1;
+
+        bytes32 messageHash = keccak256(abi.encode(mandateId, newPolicyHash, signatureNonce, block.chainid));
+        bytes32 ethSignedMessageHash = MessageHashUtils.toEthSignedMessageHash(messageHash);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(senderPrivateKey, ethSignedMessageHash);
+        bytes memory signature = abi.encodePacked(r, s, v);
+
+        vm.prank(unauthorized);
+        mandate.modifyMandate(mandateId, newPolicyHash, signatureNonce, signature);
+
+        Mandate.Policy memory p = mandate.getPolicy(mandateId);
+        assertEq(p.policyHash, newPolicyHash);
+    }
+
+    function testModifyMandateSignatureCrossChainReplayProtection() public {
+        uint256 senderPrivateKey = 1;
+        address expectedSender = vm.addr(senderPrivateKey);
+
+        bytes32 policyHash = computePolicyHash(
+            Mandate.Frequency.MONTHLY, MIN_INTERVAL,
+            PER_EXECUTION_LIMIT, 0, 0
+        );
+        bytes32 mandateId = generateMandateId();
+        vm.prank(executor);
+        mandate.createMandate(
+            expectedSender, mandateId, recipient, address(usdc),
+            AUTHORIZED_LIMIT, Mandate.ChargeType.VARIABLE,
+            block.timestamp, block.timestamp + 365 days,
+            Mandate.Frequency.MONTHLY, MIN_INTERVAL, PER_EXECUTION_LIMIT,
+            0, 0, policyHash
+        );
+
+        vm.prank(expectedSender);
+        usdc.approve(address(mandate), AUTHORIZED_LIMIT);
+
+        vm.prank(expectedSender);
+        mandate.approveMandate(mandateId);
+
+        bytes32 newPolicyHash = keccak256("new-policy");
+        uint256 signatureNonce = 1;
+
+        bytes32 messageHash = keccak256(abi.encode(mandateId, newPolicyHash, signatureNonce, 99999));
+        bytes32 ethSignedMessageHash = MessageHashUtils.toEthSignedMessageHash(messageHash);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(senderPrivateKey, ethSignedMessageHash);
+        bytes memory signature = abi.encodePacked(r, s, v);
+
+        vm.prank(expectedSender);
+        vm.expectRevert(Mandate.Mandate_InvalidSignature.selector);
+        mandate.modifyMandate(mandateId, newPolicyHash, signatureNonce, signature);
+    }
+
+    // ============ Emergency Cancel PENDING Mandate ============
+
+    function testAdminCanEmergencyCancelPendingMandate() public {
+        bytes32 mandateId = generateMandateId();
+        _createMandate(mandateId, block.timestamp, block.timestamp + 365 days);
+
+        Mandate.MandateData memory mBefore = mandate.getMandate(mandateId);
+        assertEq(uint256(mBefore.status), uint256(Mandate.MandateStatus.PENDING));
+
+        vm.prank(admin);
+        mandate.emergencyCancelMandate(mandateId);
+
+        Mandate.MandateData memory mAfter = mandate.getMandate(mandateId);
+        assertEq(uint256(mAfter.status), uint256(Mandate.MandateStatus.CANCELLED));
     }
 }
